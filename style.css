@@ -20,7 +20,7 @@ body {
   width: min(1100px, 94%);
   margin: 0 auto;
   display: grid;
-  grid-template-columns: minmax(180px, 260px) 1fr;
+  grid-template-columns: 180px 1fr;
   gap: 2rem;
   align-items: start;
   padding: 2rem 0 3rem;
@@ -30,7 +30,8 @@ body {
   top: 1.2rem;
 }
 .profile-photo {
-  width: 100%;
+  width: 180px;
+  max-width: 100%;
   display: block;
   border-radius: 14px;
   border: 1px solid var(--border);
@@ -67,7 +68,7 @@ h2 { margin-top: 0; font-size: 1.1rem; }
 a { color: var(--accent); }
 ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
 
-@media (max-width: 860px) {
+@media (max-width: 700px) {
   .page-layout {
     width: min(900px, 92%);
     grid-template-columns: 1fr;
