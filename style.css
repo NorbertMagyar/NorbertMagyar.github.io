@@ -79,6 +79,12 @@ ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
 .footer-separator {
   margin: 0 0.45rem;
 }
+.visit-counter-label {
+  margin-right: 0.3rem;
+}
+.visit-counter-badge {
+  vertical-align: middle;
+}
 
 @media (max-width: 640px) {
   .site-header {
@@ -91,5 +97,8 @@ ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
+  }
+  .visit-counter-label {
+    margin-right: 0;
   }
 }
