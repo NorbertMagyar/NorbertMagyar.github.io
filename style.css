@@ -16,33 +16,31 @@ body {
   line-height: 1.6;
 }
 
-.page-layout {
+.container {
   width: min(1100px, 94%);
   margin: 0 auto;
-  display: grid;
-  grid-template-columns: 180px 1fr;
-  gap: 2rem;
-  align-items: start;
   padding: 2rem 0 3rem;
 }
-.profile-pane {
-  position: sticky;
-  top: 1.2rem;
+.site-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.25rem;
+  padding: 0.5rem 0 1.2rem;
+  border-bottom: 1px solid var(--border);
 }
 .profile-photo {
-  width: 180px;
+  width: 140px;
+  flex: 0 0 140px;
   max-width: 100%;
+  height: auto;
   display: block;
   border-radius: 14px;
   border: 1px solid var(--border);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
 }
-.page-content {
+.header-content {
+  flex: 1;
   min-width: 0;
-}
-header {
-  padding: 0.5rem 0 1.2rem;
-  border-bottom: 1px solid var(--border);
 }
 h1 { margin: 0; font-size: 2rem; }
 .tagline { color: var(--muted); margin-top: 0.4rem; }
@@ -68,17 +66,8 @@ h2 { margin-top: 0; font-size: 1.1rem; }
 a { color: var(--accent); }
 ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
 
-@media (max-width: 700px) {
-  .page-layout {
-    width: min(900px, 92%);
-    grid-template-columns: 1fr;
-    gap: 1rem;
-  }
-
-  .profile-pane {
-    position: static;
-    max-width: 260px;
-    width: 100%;
-    justify-self: center;
+@media (max-width: 640px) {
+  .site-header {
+    flex-direction: column;
   }
 }
