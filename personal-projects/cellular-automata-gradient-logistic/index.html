@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Norbert Magyar | Gradient-Driven Logistic Cellular Automata</title>
+  <meta name="description" content="A personal projects blog post about a gradient-driven logistic cellular automata simulation." />
+  <link rel="stylesheet" href="../../style.css" />
+  <script defer src="../../analytics.js"></script>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["\\(", "\\)"]],
+        displayMath: [["\\[", "\\]"]]
+      },
+      options: {
+        skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"]
+      }
+    };
+  </script>
+  <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <style>
+    .video-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem;
+      max-width: 900px;
+      margin: 0 auto 1rem;
+      align-items: start;
+    }
+    .video-section-title {
+      text-align: center;
+      margin-bottom: 0.75rem;
+    }
+    .video-item-title {
+      text-align: center;
+      margin: 0 0 0.5rem;
+    }
+    .video-item video {
+      width: 100%;
+      max-width: 420px;
+      display: block;
+      margin: 0 auto;
+      border: 1px solid #25304a;
+      border-radius: 10px;
+    }
+    @media (max-width: 900px) {
+      .video-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+  <script>
+    if ((location.protocol === "http:" || location.protocol === "https:") && location.pathname.endsWith("/index.html")) {
+      location.replace(location.pathname.replace(/index\.html$/, "") + location.search + location.hash);
+    }
+  </script>
+</head>
+<body>
+  <div class="container">
+    <header class="site-header">
+      <img src="../../photo2.jpg" alt="Portrait of Norbert Magyar" class="profile-photo" />
+      <div class="header-content">
+        <h1>Norbert Magyar, PhD</h1>
+        <p class="tagline">Senior Software Engineer | HPC • Space Systems • AI </p>
+        <nav>
+          <a href="../../index.html">Home</a>
+          <a href="../../index.html#projects">Projects</a>
+          <a href="../../index.html#publications">Publications</a>
+          <a href="https://drive.google.com/file/d/1G0JDLsUOZ3c8C-4bo88HqySkLNYKSxh1/view?usp=sharing" target="_blank" rel="noopener">CV (PDF)</a>
+          <a href="../../index.html#talks">Talks, Awards, Highlights</a>
+          <a href="../../personal-projects.html" aria-current="page">Personal Projects</a>
+          <a href="../../hobbies.html">Hobbies</a>
+          <a href="../../index.html#contact">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="blog-main">
+      <p><a class="back-link" href="../index.html">← Back to Personal Projects Blog</a></p>
+
+      <article class="post-card post-full">
+        <p class="post-meta"><time datetime="2026-02-21">February 21, 2026</time> • Cellular Automata • Simulation</p>
+        <br>
+        <h2>Gradient-Driven Logistic Cellular Automata</h2>
+        <div class="post-body">
+          <p>
+            <br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;I have always been fascinated by <a href="https://en.wikipedia.org/wiki/Emergence"  target="_blank" rel="noopener">emergence</a>. 
+            How can simple, repetitive processes between a number of entities lead to such complexities as we observe in nature. The best example
+            being biological life itself, which arises from the electromagnetic interaction of charged elementary particles in large numbers. 
+            Within the digital realm, Conway's <a href="https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life" target="_blank" rel="noopener">Game of Life</a> is a great 
+            example of emergence. Although cells live or die according to very simple rules within the game, these simple rules are sufficient to make the game Turing complete!
+            Meaning that you can devise any computation within the game itself, for example generate <a href="https://www.youtube.com/watch?v=xP5-iIeKXE8" target="_blank" rel="noopener">the Game 
+            of Life within the Game of Life</a>, or in other words, simulate itself! Even a complete <a href="https://www.nicolasloizeau.com/gol-computer" target="_blank" rel="noopener">computer</a> has been recreated in the Game of Life. 
+          </p>
+          <p>
+            Arguably the simplest computation, or recurrence relation, that can lead to surprisingly complex and chaotic behaviour is the <a href="https://en.wikipedia.org/wiki/Logistic_map" target="_blank" rel="noopener">logistic map</a>.
+            While reading up on both the logistic map and Conway's Game of Life a couple of years back, the idea came to me that maybe I could combine both into a Game of Life-like cellular automata.
+            Cellular automata are basically a set of rules that are applied iteratively to a grid of cells that can be in various states, either discrete or continuous. I thought of replacing the dead-or-alive two-state
+            cells in the Game of Life with a continuously varying state in which neighbouring cells somehow evolve according to the logistic map. After some tweaking, I came up with a 2D cellular-automata-style simulation on a periodic grid,
+            with the update law based on the logistic map, as mentioned, where the local growth parameter <code>r</code> is modulated by the
+            spatial gradient between neighboring cells.
+          </p>
+          <p>
+            The cell update is:
+            \[
+              A_{t+1}(i,j) = A_t(i,j)\,\bigl(c_a + c_b\,f_t(i,j)\bigr)\,\bigl(1 - A_t(i,j)\bigr)
+            \]
+            where the default factor is based on central-difference gradients in both axes, e.g.
+            \[
+              f_t(i,j) = \partial_x A_t(i,j) + \partial_y A_t(i,j).
+            \]
+          </p>
+          <p>
+            The grid is initialized with 0.5 plus small random Gaussian fluctuations. The individual cell values are always between 0 and 1, as in the case of the logistic map.
+          </p>
+          <p>
+            For different values of <code>ca</code> and <code>cb</code>, the simulation produces
+            very different emergent patterns and dynamics: coherent structures, vortex-like shapes, fronts, and
+            strongly chaotic textures. I was amazed to see the complexity that arises for various values for the two constants, and I spent a couple of
+            hours exploring the parameter space. Below you can see animations of some of the most interesting simulations, for a couple of thousand iterations. 
+          </p>
+          <p>Whether there is some deeper logical substrate, meaning, or connection to other areas of mathematics or physics behind these various dynamics, I couldn't figure out yet. 
+            As is the case with most nonlinear toy models, there probably is. For now, it's art!
+          </p>
+          <p>The repository with the script can be found on my <a href="https://github.com/NorbertMagyar/CA" target="_blank" rel="noopener">GitHub</a>. 
+            It uses GPU acceleration (via CuPy) when available. That came in quite handy when exploring the parameter space, even with my modest NVIDIA T600 laptop GPU.</p>
+          <p>Enjoy!</p>
+
+          <h3 class="video-section-title">Selected Pretty Animations</h3>
+          <div class="video-grid">
+            <div class="video-item">
+              <p class="video-item-title">"Vortex dynamics" (<code>ca=2.0, cb=2.01</code>)</p>
+              <video controls preload="metadata">
+                <source src="https://raw.githubusercontent.com/NorbertMagyar/CA/main/ca_2_cb_2.01.mp4" type="video/mp4" />
+                Your browser does not support the video tag.
+              </video>
+            </div>
+            <div class="video-item">
+              <p class="video-item-title">"Supernova" (<code>ca=1.0, cb=3.95</code>)</p>
+              <video controls preload="metadata">
+                <source src="https://raw.githubusercontent.com/NorbertMagyar/CA/main/ca_1_cb_3.95.mp4" type="video/mp4" />
+                Your browser does not support the video tag.
+              </video>
+            </div>
+            <div class="video-item">
+              <p class="video-item-title">"Waltz" (<code>ca=1.1</code>, <code>cb=2.7</code>)</p>
+              <video controls preload="metadata">
+                <source src="https://raw.githubusercontent.com/NorbertMagyar/CA/main/ca_1.1_cb_2.7.mp4" type="video/mp4" />
+              </video>
+            </div>
+            <div class="video-item">
+              <p class="video-item-title">"Plasma shock" (<code>ca=1.3</code>, <code>cb=2.11</code>)</p>
+              <video controls preload="metadata">
+                <source src="https://raw.githubusercontent.com/NorbertMagyar/CA/main/ca_1.3_cb_2.11.mp4" type="video/mp4" />
+              </video>
+            </div>
+            <div class="video-item">
+              <p class="video-item-title">"Arrows of Life" (<code>ca=1.02</code>, <code>cb=3.9</code>)</p>
+              <video controls preload="metadata">
+                <source src="https://raw.githubusercontent.com/NorbertMagyar/CA/main/ca_1.02_cb_3.9.mp4" type="video/mp4" />
+              </video>
+            </div>
+            <div class="video-item">
+              <p class="video-item-title">"Curie Temperature" (<code>ca=2.1</code>, <code>cb=2.036</code>)</p>
+              <video controls preload="metadata">
+                <source src="https://raw.githubusercontent.com/NorbertMagyar/CA/main/ca_2.1_cb_2.036.mp4" type="video/mp4" />
+              </video>
+            </div>
+            <div class="video-item">
+              <p class="video-item-title">"Shallow rapids" (<code>ca=2.3</code>, <code>cb=1.98</code>)</p>
+              <video controls preload="metadata">
+                <source src="https://raw.githubusercontent.com/NorbertMagyar/CA/main/ca_2.3_cb_1.98.mp4" type="video/mp4" />
+              </video>
+            </div>
+            <div class="video-item">
+              <p class="video-item-title">"Boiling Life" (<code>ca=2.72</code>, <code>cb=1.53</code>)</p>
+              <video controls preload="metadata">
+                <source src="https://raw.githubusercontent.com/NorbertMagyar/CA/main/ca_2.72_cb_1.53.mp4" type="video/mp4" />
+              </video>
+            </div>            
+          </div>
+        </div>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      Last modified: <time id="last-modified">Loading...</time>
+    </footer>
+  </div>
+  <script src="../../last-modified.js"></script>
+</body>
+</html>
