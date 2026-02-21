@@ -3,56 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Norbert Magyar | Hobbies Blog</title>
-  <meta name="description" content="Blog-style notes and articles about hobbies by Norbert Magyar." />
-  <link rel="stylesheet" href="style.css" />
-  <script defer src="analytics.js"></script>
+  <title>Redirecting...</title>
+  <script>
+    const target = location.protocol === "file:" ? "hobbies/index.html" : "hobbies/";
+    location.replace(target + location.search + location.hash);
+  </script>
 </head>
 <body>
-  <div class="container">
-    <header class="site-header">
-      <img src="photo2.jpg" alt="Portrait of Norbert Magyar" class="profile-photo" />
-      <div class="header-content">
-        <h1>Norbert Magyar, PhD</h1>
-        <p class="tagline">Senior Software Engineer | HPC • Space Systems • AI </p>
-        <nav>
-          <a href="index.html">Home</a>
-          <a href="index.html#projects">Projects</a>
-          <a href="index.html#publications">Publications</a>
-          <a href="https://drive.google.com/file/d/1G0JDLsUOZ3c8C-4bo88HqySkLNYKSxh1/view?usp=sharing" target="_blank" rel="noopener">CV (PDF)</a>
-          <a href="index.html#talks">Talks, Awards, Highlights</a>
-          <a href="personal-projects.html">Personal Projects</a>
-          <a href="hobbies.html" aria-current="page">Hobbies</a>
-          <a href="index.html#contact">Contact</a>
-        </nav>
-      </div>
-    </header>
-
-    <main class="blog-main">
-      <section class="blog-intro">
-        <h2>Hobbies Blog</h2>
-        <p>
-          Outside work, this is where I document projects and routines that keep me curious:
-          practical hobby notes, lessons learned, and small milestones.
-        </p>
-      </section>
-
-      <article class="post-card">
-        <p class="post-meta"><time datetime="2026-02-09">February 9, 2026</time> • Music</p>
-        <h2><a class="post-title-link" href="hobbies-guitar-practice-system.html">Weekly Practice System for Guitar</a></h2>
-        <p>
-          I structured practice into short daily blocks for technique, rhythm, and repertoire.
-          Consistency over intensity has been the key change, and tracking sessions made progress
-          much easier to see over several weeks.
-        </p>
-        <p><a class="read-more" href="hobbies-guitar-practice-system.html">Read full post →</a></p>
-      </article>
-    </main>
-
-    <footer class="site-footer">
-      Last modified: <time id="last-modified">Loading...</time>
-    </footer>
-  </div>
-  <script src="last-modified.js"></script>
+  <p>Redirecting to <a href="hobbies/index.html">hobbies/</a>...</p>
 </body>
 </html>

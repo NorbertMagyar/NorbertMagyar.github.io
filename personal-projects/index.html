@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Norbert Magyar | Personal Projects Blog</title>
+  <meta name="description" content="Blog-style notes and articles about personal software projects by Norbert Magyar." />
+  <link rel="stylesheet" href="../style.css" />
+  <script defer src="../analytics.js"></script>
+  <script>
+    if ((location.protocol === "http:" || location.protocol === "https:") && location.pathname.endsWith("/index.html")) {
+      location.replace(location.pathname.replace(/index\.html$/, "") + location.search + location.hash);
+    }
+  </script>
+</head>
+<body>
+  <div class="container">
+    <header class="site-header">
+      <img src="../photo2.jpg" alt="Portrait of Norbert Magyar" class="profile-photo" />
+      <div class="header-content">
+        <h1>Norbert Magyar, PhD</h1>
+        <p class="tagline">Senior Software Engineer | HPC • Space Systems • AI </p>
+        <nav>
+          <a href="../index.html">Home</a>
+          <a href="../index.html#projects">Projects</a>
+          <a href="../index.html#publications">Publications</a>
+          <a href="https://drive.google.com/file/d/1G0JDLsUOZ3c8C-4bo88HqySkLNYKSxh1/view?usp=sharing" target="_blank" rel="noopener">CV (PDF)</a>
+          <a href="../index.html#talks">Talks, Awards, Highlights</a>
+          <a href="../personal-projects.html" aria-current="page">Personal Projects</a>
+          <a href="../hobbies.html">Hobbies</a>
+          <a href="../index.html#contact">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="blog-main">
+      <section class="blog-intro">
+        <h2>Personal Projects Blog</h2>
+        <p>
+          This page is a running log of my side projects: what I am building, what worked,
+          and what broke. Each entry focuses on technical decisions and practical lessons.
+        </p>
+      </section>
+
+      <article class="post-card">
+        <p class="post-meta"><time datetime="2026-02-16">February 16, 2026</time> • APIs • Space Weather</p>
+        <h2><a class="post-title-link" href="../personal-projects-space-weather-api.html">Designing a Minimal Space-Weather API</a></h2>
+        <p>
+          I am prototyping a compact API that exposes a few high-value space-weather indices
+          with predictable latency. The current challenge is balancing simplicity with enough
+          metadata for downstream ML and visualization workflows.
+        </p>
+        <p><a class="read-more" href="../personal-projects-space-weather-api.html">Read full post →</a></p>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      Last modified: <time id="last-modified">Loading...</time>
+    </footer>
+  </div>
+  <script src="../last-modified.js"></script>
+</body>
+</html>

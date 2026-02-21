@@ -3,65 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Norbert Magyar | Designing a Minimal Space-Weather API</title>
-  <meta name="description" content="A personal projects blog post about designing a minimal space-weather API." />
-  <link rel="stylesheet" href="style.css" />
-  <script defer src="analytics.js"></script>
+  <title>Redirecting...</title>
+  <script>
+    const target = location.protocol === "file:"
+      ? "personal-projects/space-weather-api/index.html"
+      : "personal-projects/space-weather-api/";
+    location.replace(target + location.search + location.hash);
+  </script>
 </head>
 <body>
-  <div class="container">
-    <header class="site-header">
-      <img src="photo2.jpg" alt="Portrait of Norbert Magyar" class="profile-photo" />
-      <div class="header-content">
-        <h1>Norbert Magyar, PhD</h1>
-        <p class="tagline">Senior Software Engineer | HPC • Space Systems • AI </p>
-        <nav>
-          <a href="index.html">Home</a>
-          <a href="index.html#projects">Projects</a>
-          <a href="index.html#publications">Publications</a>
-          <a href="https://drive.google.com/file/d/1G0JDLsUOZ3c8C-4bo88HqySkLNYKSxh1/view?usp=sharing" target="_blank" rel="noopener">CV (PDF)</a>
-          <a href="index.html#talks">Talks, Awards, Highlights</a>
-          <a href="personal-projects.html" aria-current="page">Personal Projects</a>
-          <a href="hobbies.html">Hobbies</a>
-          <a href="index.html#contact">Contact</a>
-        </nav>
-      </div>
-    </header>
-
-    <main class="blog-main">
-      <p><a class="back-link" href="personal-projects.html">← Back to Personal Projects Blog</a></p>
-
-      <article class="post-card post-full">
-        <p class="post-meta"><time datetime="2026-02-16">February 16, 2026</time> • APIs • Space Weather</p>
-        <h2>Designing a Minimal Space-Weather API</h2>
-        <div class="post-body">
-          <p>
-            I started this project to answer a recurring need: quick access to a handful of
-            space-weather indicators without having to navigate large, heterogeneous datasets.
-            The goal is a small API surface with clear semantics and stable response formats.
-          </p>
-          <p>
-            The first technical decision was to keep the data model strict and explicit. Each
-            endpoint returns one index family with timestamps, units, and provenance metadata.
-            This avoids ambiguity and makes downstream use in notebooks or dashboards simpler.
-          </p>
-          <p>
-            Performance-wise, the current prototype relies on precomputed snapshots and short-lived
-            caching. This allows predictable latency under normal traffic while keeping the
-            implementation lightweight enough for side-project maintenance.
-          </p>
-          <p>
-            Next step is adding a validation layer for outlier detection and endpoint-level quality
-            flags so consumers can quickly assess reliability before running analysis pipelines.
-          </p>
-        </div>
-      </article>
-    </main>
-
-    <footer class="site-footer">
-      Last modified: <time id="last-modified">Loading...</time>
-    </footer>
-  </div>
-  <script src="last-modified.js"></script>
+  <p>Redirecting to <a href="personal-projects/space-weather-api/index.html">personal-projects/space-weather-api/</a>...</p>
 </body>
 </html>
