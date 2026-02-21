@@ -66,6 +66,30 @@ section {
   padding: 1rem 1.2rem;
   margin: 1rem 0;
 }
+.blog-main {
+  display: grid;
+  gap: 1rem;
+}
+.blog-main section {
+  margin: 0;
+}
+.post-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem 1.2rem;
+}
+.post-card h2 {
+  margin: 0.2rem 0 0.6rem;
+}
+.post-card p {
+  margin: 0;
+}
+.post-meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-bottom: 0.35rem;
+}
 h2 { margin-top: 0; font-size: 1.1rem; }
 a { color: var(--accent); }
 ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
@@ -76,29 +100,14 @@ ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
   color: var(--muted);
   font-size: 0.95rem;
 }
-.footer-separator {
-  margin: 0 0.45rem;
-}
-.visit-counter-label {
-  margin-right: 0.3rem;
-}
-.visit-counter-badge {
-  vertical-align: middle;
-}
 
 @media (max-width: 640px) {
   .site-header {
     flex-direction: column;
   }
-  .footer-separator {
-    display: none;
-  }
   .site-footer {
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
-  }
-  .visit-counter-label {
-    margin-right: 0;
   }
 }

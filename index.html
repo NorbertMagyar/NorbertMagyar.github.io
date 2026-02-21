@@ -1,25 +1,36 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-R5RHL6EBJH"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-R5RHL6EBJH');
+</script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Norbert Magyar | Senior Software Engineer</title>
   <meta name="description" content="HPC, AI, space systems, scientific software engineering" />
   <link rel="stylesheet" href="style.css" />
+  <script defer src="analytics.js"></script>
 </head>
 <body>
   <div class="container">
     <header class="site-header">
       <img src="photo2.jpg" alt="Portrait of Norbert Magyar" class="profile-photo" />
       <div class="header-content">
-        <h1>Norbert Magyar, PhD</h1>
-        <p class="tagline">Senior Software Engineer | HPC • Space Systems • AI </p>
+        <h1>Norbert Magyar</h1>
+        <p class="tagline">Senior Software Engineer | HPC • Space Systems • AI | Astrophysics PhD</p>
         <nav>
           <a href="index.html" aria-current="page">Home</a>
           <a href="#projects">Projects</a>
           <a href="#publications">Publications</a>
           <a href="#talks">Talks, Awards, Highlights</a>
           <a href="personal-projects.html">Personal Projects</a>
+          <a href="hobbies.html">Hobbies</a>
           <a href="#contact">Contact</a>
         </nav>
       </div>
@@ -29,7 +40,7 @@
       <section id="about">
         <p>
           Welcome to my personal GitHub page! Here you will find information about my past-present-future projects, professional and side-projects alike. <br><br>
-          About me: I am an astrophysicist and plasma physicist turned software engineer. Currently, I build scientific and production software at the intersection of high-performance computing,
+          About me: I am an astrophysicist, plasma physicist, and software engineer. Currently, I build scientific and production software at the intersection of high-performance computing,
           cloud-native systems, scientific AI, and space weather applications for the European Space Agency (ESA).
         </p>
       </section>
@@ -37,7 +48,10 @@
       <section id="projects">
         <h2>Selected Work</h2>
         <ul>
-          <li><a href="https://www.stariongroup.eu/starion-leads-development-of-space-weather-payload-data-centre-for-esa/" target="_blank" rel="noopener">ESA Space Weather Payload Data Centre</a> (backend/cloud-native engineering)</li>
+          <li><a href="https://www.stariongroup.eu/starion-leads-development-of-space-weather-payload-data-centre-for-esa/" target="_blank" rel="noopener">ESA Space Weather Payload Data Centre</a> 
+            (backend/cloud-native engineering)
+            <p>As a core developer, I take part in designing and implementing the center's cloud-native backend services for scientific data ingestion and processing, building distributed microservices (Java/Spring Boot, messaging, databases), deploying containerized infrastructure with Kubernetes and GitOps, and
+            implementing observability stacks (ELK, Grafana).</p></li>
           <li>HPC plasma/MHD simulations (<a href="https://amrvac.org/" target="_blank" rel="noopener">AMRVAC</a>,
                                           <a href="https://github.com/IAS-Astrophysics/athenak" target="_blank" rel="noopener">AthenaK</a>,
                                           <a href="https://flash.rochester.edu/site/" target="_blank" rel="noopener">FLASH</a>) <br> Please check my other, research-oriented <a href="https://magyarfnorbert.wixsite.com/home" target="_blank" rel="noopener">website</a> for a showcase of my research, including simulation movies.</li>
@@ -73,13 +87,6 @@
 
     <footer class="site-footer">
       Last modified: <time id="last-modified">Loading...</time>
-      <span class="footer-separator">|</span>
-      <span class="visit-counter-label">Visits:</span>
-      <img
-        class="visit-counter-badge"
-        src="https://visitor-badge.laobi.icu/badge?page_id=norbertmagyar.Page.home&left_text=Global%20Visits"
-        alt="Global visit counter for this page"
-      />
     </footer>
   </div>
   <script src="last-modified.js"></script>

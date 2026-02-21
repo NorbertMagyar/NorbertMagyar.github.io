@@ -3,9 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Norbert Magyar | Personal Projects</title>
-  <meta name="description" content="Personal software and engineering projects by Norbert Magyar." />
+  <title>Norbert Magyar | Personal Projects Blog</title>
+  <meta name="description" content="Blog-style notes and articles about personal software projects by Norbert Magyar." />
   <link rel="stylesheet" href="style.css" />
+  <script defer src="analytics.js"></script>
 </head>
 <body>
   <div class="container">
@@ -16,35 +17,54 @@
         <p class="tagline">Senior Software Engineer | HPC • Space Systems • AI </p>
         <nav>
           <a href="index.html">Home</a>
-          
           <a href="index.html#projects">Projects</a>
           <a href="index.html#publications">Publications</a>
           <a href="index.html#talks">Talks, Awards, Highlights</a>
           <a href="personal-projects.html" aria-current="page">Personal Projects</a>
+          <a href="hobbies.html">Hobbies</a>
           <a href="index.html#contact">Contact</a>
         </nav>
       </div>
     </header>
 
-    <main>
-      <section id="personal-projects">
-        <h2>Personal Projects</h2>
+    <main class="blog-main">
+      <section class="blog-intro">
+        <h2>Personal Projects Blog</h2>
         <p>
-          A focused list of side projects where I experiment with tools, architectures,
-          and ideas outside my day-to-day work.
+          This page is a running log of my side projects: what I am building, what worked,
+          and what broke. Each entry focuses on technical decisions and practical lessons.
         </p>
-        <ul>
-          <li>
-            <strong>Project 1:</strong> Short description of what it does, the stack, and your role.
-          </li>
-          <li>
-            <strong>Project 2:</strong> Short description plus a key technical challenge you solved.
-          </li>
-          <li>
-            <strong>Project 3:</strong> Short description and a link to code/demo if available.
-          </li>
-        </ul>
       </section>
+
+      <article class="post-card">
+        <p class="post-meta"><time datetime="2026-02-16">February 16, 2026</time> • APIs • Space Weather</p>
+        <h2>Designing a Minimal Space-Weather API</h2>
+        <p>
+          I am prototyping a compact API that exposes a few high-value space-weather indices
+          with predictable latency. The current challenge is balancing simplicity with enough
+          metadata for downstream ML and visualization workflows.
+        </p>
+      </article>
+
+      <article class="post-card">
+        <p class="post-meta"><time datetime="2026-01-28">January 28, 2026</time> • HPC • Tooling</p>
+        <h2>Containerizing Local HPC Test Pipelines</h2>
+        <p>
+          This experiment packages representative pieces of my simulation workflow into lightweight
+          containers so I can validate data plumbing before submitting larger jobs to remote systems.
+          The biggest gain so far is faster iteration on edge-case failures.
+        </p>
+      </article>
+
+      <article class="post-card">
+        <p class="post-meta"><time datetime="2025-12-11">December 11, 2025</time> • AI • Experiments</p>
+        <h2>Small-Scale Fine-Tuning Notes for Forecasting Tasks</h2>
+        <p>
+          I ran a controlled set of fine-tuning experiments on reduced datasets to map where
+          model quality improvements justify training cost. The best outcome came from tighter
+          feature selection rather than larger model variants.
+        </p>
+      </article>
     </main>
 
     <footer class="site-footer">
