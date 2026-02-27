@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Norbert Magyar | CellGrow: growing cells in a computer</title>
+  <meta name="description" content="A personal projects blog stub for CellGrow experiments." />
+  <link rel="stylesheet" href="../../style.css" />
+  <script defer src="../../analytics.js"></script>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["\\(", "\\)"]],
+        displayMath: [["\\[", "\\]"]]
+      },
+      options: {
+        skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"]
+      }
+    };
+  </script>
+  <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <style>
+    .video-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem;
+      max-width: 900px;
+      margin: 0 auto 1rem;
+      align-items: start;
+    }
+    .video-section-title {
+      text-align: center;
+      margin-bottom: 0.75rem;
+    }
+    .video-item-title {
+      text-align: center;
+      margin: 0 0 0.5rem;
+    }
+    .video-item-caption {
+      text-align: center;
+      color: #a9b4c9;
+      font-size: 0.9rem;
+      margin: 0.55rem 0 0;
+    }
+    .video-item video {
+      width: 100%;
+      max-width: 720px;
+      display: block;
+      margin: 0 auto;
+      border: 1px solid #25304a;
+      border-radius: 10px;
+    }
+    @media (max-width: 900px) {
+      .video-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+  <script>
+    if ((location.protocol === "http:" || location.protocol === "https:") && location.pathname.endsWith("/index.html")) {
+      location.replace(location.pathname.replace(/index\.html$/, "") + location.search + location.hash);
+    }
+  </script>
+</head>
+<body>
+  <div class="container">
+    <header class="site-header">
+      <img src="../../photo2.jpg" alt="Portrait of Norbert Magyar" class="profile-photo" />
+      <div class="header-content">
+        <h1>Norbert Magyar, PhD</h1>
+        <p class="tagline">Senior Software Engineer | HPC • Space Systems • AI </p>
+        <nav>
+          <a href="../../index.html">Home</a>
+          <a href="../../index.html#projects">Projects</a>
+          <a href="../../index.html#publications">Publications</a>
+          <a href="https://drive.google.com/file/d/1G0JDLsUOZ3c8C-4bo88HqySkLNYKSxh1/view?usp=sharing" target="_blank" rel="noopener">CV (PDF)</a>
+          <a href="../../index.html#talks">Talks, Awards, Highlights</a>
+          <a href="../../personal-projects.html" aria-current="page">Personal Projects</a>
+          <a href="../../hobbies.html">Hobbies</a>
+          <a href="../../index.html#contact">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="blog-main">
+      <p><a class="back-link" href="../index.html">← Back to Personal Projects Blog</a></p>
+
+      <article class="post-card post-full">
+        <p class="post-meta"><time datetime="2026-02-27">February 27, 2026</time> • Cell Growth • Simulation</p>
+        <h2><br>CellGrow: growing cells in a computer</h2>
+        <div class="post-body">
+          <p>
+          <br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;During my hour+ long train commute to my workplace (thankfully mostly only twice a week), 
+            I mostly read. My favourite topics have been philosophy, biology, neuroscience, history and historical biographies. Three books on biology that I
+            have read within the last year are <a href="http://selfassemblingbrain.com/" target="_blank" rel="noopener"><i>The Self-Assembling Brain: How Neural Networks
+            Grow Smarter</i></a> by <b>Peter Robin Hiesinger</b>, 
+            <a href="https://www.goodreads.com/book/show/123012858-how-life-works" target="_blank" rel="noopener"><i>How Life Works: A User’s Guide to the New Biology</i></a> by <b>Philip Ball</b>, 
+            and <a href="https://press.uchicago.edu/ucp/books/book/chicago/D/bo45084244.html" target="_blank" rel="noopener"><i>The Demon in the Machine: How Hidden Webs of 
+            Information Are Finally Solving the Mystery of Life</i></a> by <b>Paul Davies</b>. Although they present different topics of biology, these authors agree 
+            on one thing: cells and cellular development is incredibly complex and we are still very far from truly understanding how life works. 
+            While Paul Davies posits that a new approach and paradigm that wholly incorporates information into the physics of life is required to move forward in understanding life,
+            Peter Robin Hiesinger asks how is it possible that a single fertilised egg contains enough information to recreate a whole organism, focusing specifically
+            on the development of neurons and targeted synapses, which seem to require much more information than could be contained within a sinlge cell. 
+            Hiesinger gives a striking example of cell-encoded information through targeted synapse develoment in the animal kingdom: 
+            <a href="https://en.wikipedia.org/wiki/Monarch_butterfly_migration"target="_blank" rel="noopener">Monarch butterfly migration</a>.
+            These butterflies return to a few square kilometers of forest in Mexico, after having migrated through multiple generations (!) to California. 
+            The generation that migrates to this very specific place in Mexico 
+            has never been there, and not even their grandparents have been. How is it possible, then, that they have such precise information on the whereabouts of this forest? 
+            Clearly, this information about the whereabouts of this forest and 
+            the path to get there, has to be present, in a very compacted way, in the fertilised egg of the Monarch butterfly. 
+            <br><br>
+            Inspired by these incredible facts and new ways of thinking about life and cellular development as presented in these books, 
+            I wanted to see whether I could come up with a toy model of cellular growth that 
+            could lead to morphological complexity from simple rules, similar to the information unfolding that goes on in biological cells. 
+            Unbeknowst to me until this point, but not suprising, there is a whole field of study focusing precisely on this problem,
+            as presented in these recent review articles: <a href="https://www.frontiersin.org/journals/physics/articles/10.3389/fphy.2022.968409/full" target="_blank" rel="noopener"><i>Agent-based models in cellular systems</i></a>, and 
+            <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC12839770/" target="_blank" rel="noopener"><i>Cell-Based Computational Models of Organoids: A Systematic Review</i></a>. 
+            <br><br>
+            My aim with this model was mostly to have fun coding it and to see how far can I get with my simple approach. And of course to get some pretty pictures and animations. 
+            The script, written in Python and available on my <a href="https://github.com/NorbertMagyar/CellGrow" target="_blank" rel="noopener">GitHub</a>, performs a clear goal:
+            starting from a single cell, which are represented as little spheres of well-defined radius, follow some simple rules defining cell division, statis, and apoptosis, in a step-wise continous evolution in 3D space.
+            
+
+           
+          </p>
+          <p>
+            I will add the model formulation, simulation setup, and first results soon.
+          </p>
+            <div class="video-item">
+              <p class="video-item-title">Dividing cells</p>
+              <video controls preload="metadata">
+                <source src="https://raw.githubusercontent.com/NorbertMagyar/CellGrow/main/cell_growth_cr_12_de_16_dir_tangential_growdemo.mp4" type="video/mp4" />
+              </video>
+              <p class="video-item-caption">Example run of cell growth and division in CellGrow for 15 generations</p>
+            </div>  
+        </div>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      Last modified: <time id="last-modified">Loading...</time>
+    </footer>
+  </div>
+  <script src="../../last-modified.js"></script>
+</body>
+</html>
