@@ -289,6 +289,12 @@
     if (mode === "independent") {
       return "Independent oscillators";
     }
+    if (mode === "piano") {
+      return "Piano-like resonances";
+    }
+    if (mode === "guitar") {
+      return "Guitar-like plucks";
+    }
     if (mode === "spectral") {
       return "Spectral bins";
     }
@@ -304,6 +310,12 @@
   function renderModeDescription(mode) {
     if (mode === "independent") {
       return "Treats painted ridges as unrelated oscillators with no phase coupling.";
+    }
+    if (mode === "piano") {
+      return "Turns tracked ridges into struck-string style resonances with hammer attacks, stretched partials, and decaying overtones.";
+    }
+    if (mode === "guitar") {
+      return "Turns tracked ridges into plucked-string voices with bright attacks, decaying harmonics, and light string-style inharmonicity.";
     }
     if (mode === "spectral") {
       return "Classic spectrogram additive synthesis with one oscillator per frequency bin.";
@@ -416,7 +428,7 @@
       Math.min(MIN_VIEW_COLS, trackColCount()),
       trackColCount()
     );
-    state.viewOffsetCol = clamp(Math.round(nextOffset), 0, maxViewOffset());
+    state.viewOffsetCol = clamp(Number(nextOffset) || 0, 0, maxViewOffset());
     updateOutputs();
     if (options.render !== false) {
       renderCanvas();
@@ -474,6 +486,53 @@
     if (state.scoreEvents.length) {
       state.scoreEvents = [];
     }
+  }
+
+  function removeScoreEventsNearPoint(point) {
+    if (!state.scoreEvents.length) {
+      return false;
+    }
+
+    const radiusCols = Math.max(2, brushRadiusCells() * 0.95);
+    const radiusRows = Math.max(1.2, brushRadiusCells() * 0.48);
+    const eraseStartSec = timeFromCol(point.col - radiusCols);
+    const eraseEndSec = timeFromCol(point.col + radiusCols);
+    const minSegment = 0.02;
+    const nextEvents = [];
+    let changed = false;
+
+    for (const note of state.scoreEvents) {
+      const noteRow = rowFromFreq(midiToFreq(note.midi));
+      const noteStart = note.startSec;
+      const noteEnd = note.startSec + note.durationSec;
+      const pitchHit = Math.abs(point.row - noteRow) <= radiusRows;
+      const timeHit = eraseEndSec > noteStart && eraseStartSec < noteEnd;
+
+      if (!pitchHit || !timeHit) {
+        nextEvents.push(note);
+        continue;
+      }
+
+      changed = true;
+      if (noteStart < eraseStartSec - minSegment) {
+        nextEvents.push({
+          ...note,
+          durationSec: eraseStartSec - noteStart
+        });
+      }
+      if (noteEnd > eraseEndSec + minSegment) {
+        nextEvents.push({
+          ...note,
+          startSec: eraseEndSec,
+          durationSec: noteEnd - eraseEndSec
+        });
+      }
+    }
+
+    if (changed) {
+      state.scoreEvents = mergeAdjacentNoteEvents(nextEvents);
+    }
+    return changed;
   }
 
   function cloneEventList(events) {
@@ -661,6 +720,10 @@
       0,
       Math.max(0, trackColCount() - 1)
     );
+  }
+
+  function timeFromCol(col) {
+    return (clamp(col, 0, Math.max(0, trackColCount() - 1)) / Math.max(1, trackColCount() - 1)) * durationSeconds();
   }
 
   function amplitudeColor(value) {
@@ -980,8 +1043,8 @@
       const rectY = (topY + bottomY) * 0.5 - rectHeight * 0.5;
       const velocity = clamp(note.velocity || 0.78, 0.2, 1);
 
-      ctx.fillStyle = `rgba(${Math.round(102 + velocity * 64)}, ${Math.round(186 + velocity * 28)}, 255, 0.62)`;
-      ctx.strokeStyle = `rgba(${Math.round(214 + velocity * 24)}, ${Math.round(236 + velocity * 16)}, 255, 0.96)`;
+      ctx.fillStyle = `rgba(${Math.round(96 + velocity * 58)}, ${Math.round(182 + velocity * 24)}, 255, 0.34)`;
+      ctx.strokeStyle = `rgba(${Math.round(214 + velocity * 20)}, ${Math.round(236 + velocity * 12)}, 255, 0.84)`;
       ctx.lineWidth = 1.1;
       ctx.fillRect(x1, rectY, width, rectHeight);
       ctx.strokeRect(x1 + 0.5, rectY + 0.5, Math.max(1, width - 1), Math.max(1, rectHeight - 1));
@@ -1298,6 +1361,7 @@
     stampBrush(point, -amount, 1.3, drawData);
     stampBrush(point, -amount, 1.3, basslineData);
     const removedBassEvents = removeBassEventsNearPoint(point);
+    removeScoreEventsNearPoint(point);
     if (touchedBassVisual || removedBassEvents) {
       state.currentBasslinePreset = "custom";
     }
@@ -2363,6 +2427,145 @@
     return output;
   }
 
+  function buildInstrumentTrackAudioData(analysis, totalSamples, tracks, instrument) {
+    const cols = trackColCount();
+    const output = new Float32Array(totalSamples);
+    const isGuitar = instrument === "guitar";
+    const isPiano = instrument === "piano";
+
+    for (const track of tracks) {
+      const medianFreq = estimateTrackMedianFreq(track);
+      const stringCount = isPiano
+        ? (medianFreq < 280 ? 3 : medianFreq < 900 ? 2 : 1)
+        : 1;
+      const stringDetunes = isPiano
+        ? [-0.0022, 0, 0.0025]
+        : [0];
+      const phase1 = new Float64Array(stringCount);
+      const phase2 = new Float64Array(stringCount);
+      const phase3 = new Float64Array(stringCount);
+      const phase4 = new Float64Array(stringCount);
+      let lastFreq = track.freqTrack[track.firstCol] > 0 ? track.freqTrack[track.firstCol] : medianFreq;
+      let smoothedFreq = lastFreq;
+      let onsetAgeSamples = Math.max(1, Math.floor(RENDER_SAMPLE_RATE * 0.02));
+      let noiseMemory = 0;
+
+      function resetInstrumentPhases(col) {
+        const onsetSeed = track.id * 29.7 + col * 0.83 + (isGuitar ? 11.9 : 23.4);
+        for (let stringIndex = 0; stringIndex < stringCount; stringIndex += 1) {
+          const offset = deterministicPhase(onsetSeed + stringIndex * 0.37) * (isPiano ? 0.08 : 0.04);
+          const basePhase = (track.initialPhase + offset) % TAU;
+          phase1[stringIndex] = basePhase;
+          phase2[stringIndex] = (basePhase * 2) % TAU;
+          phase3[stringIndex] = (basePhase * 3) % TAU;
+          phase4[stringIndex] = (basePhase * 4) % TAU;
+        }
+        onsetAgeSamples = 0;
+      }
+
+      resetInstrumentPhases(track.firstCol);
+
+      for (let col = track.firstCol; col <= track.lastCol; col += 1) {
+        const sampleStart = Math.floor((col / cols) * totalSamples);
+        const sampleEnd = Math.floor(((col + 1) / cols) * totalSamples);
+        const segmentLength = Math.max(1, sampleEnd - sampleStart);
+        const nextCol = Math.min(cols - 1, col + 1);
+        const amp0 = track.ampTrack[col];
+        const amp1 = track.ampTrack[nextCol];
+        const resetHere = col === track.firstCol || track.phaseResetMask[col] > 0;
+        if (resetHere) {
+          resetInstrumentPhases(col);
+        }
+        if (amp0 < EPSILON && amp1 < EPSILON) {
+          continue;
+        }
+
+        const freq0 = track.freqTrack[col] > 0 ? track.freqTrack[col] : lastFreq;
+        const freq1 = track.freqTrack[nextCol] > 0 ? track.freqTrack[nextCol] : freq0;
+        const logFreq0 = safeLogFreq(freq0);
+        const logFreq1 = safeLogFreq(freq1);
+
+        for (let sample = sampleStart; sample < sampleEnd; sample += 1) {
+          const localT = smoothstep01((sample - sampleStart) / segmentLength);
+          const targetFreq = Math.exp(lerp(logFreq0, logFreq1, localT));
+          const coherence = lerp(track.coherenceTrack[col], track.coherenceTrack[nextCol], localT);
+          const noisiness = lerp(track.noisinessTrack[col], track.noisinessTrack[nextCol], localT);
+          const transient = lerp(track.transientTrack[col], track.transientTrack[nextCol], localT);
+          const smoothing = isGuitar
+            ? lerp(0.07, 0.18, coherence)
+            : lerp(0.06, 0.14, coherence);
+          smoothedFreq += (targetFreq - smoothedFreq) * smoothing;
+
+          const amplitude = Math.pow(lerp(amp0, amp1, localT), 1.01) * (0.9 + 0.1 * coherence);
+          const onsetAge = onsetAgeSamples / RENDER_SAMPLE_RATE;
+          const attackSeconds = isGuitar ? 0.003 : 0.005;
+          const attackEnv = onsetAge < attackSeconds ? onsetAge / Math.max(0.0005, attackSeconds) : 1;
+          const highFreqFactor = clamp(smoothedFreq / 1200, 0, 1);
+          const bodyDecayRate = isGuitar
+            ? lerp(1.7, 3.8, highFreqFactor)
+            : lerp(0.85, 2.5, highFreqFactor);
+          const brightnessDecayRate = isGuitar
+            ? lerp(5.8, 9.2, highFreqFactor)
+            : lerp(4.6, 8.1, highFreqFactor);
+          const bodyDecay = Math.exp(-onsetAge * bodyDecayRate);
+          const brightnessDecay = Math.exp(-onsetAge * brightnessDecayRate);
+          const transientShape = 1 + transient * (isGuitar ? 0.16 : 0.22) * Math.exp(-onsetAge * 42);
+
+          const noise = deterministicNoise((sample + 1) * (isGuitar ? 2.31 : 1.73) + track.id * 7.3);
+          noiseMemory = isGuitar
+            ? noiseMemory * 0.52 + noise * 0.48
+            : noiseMemory * 0.68 + noise * 0.32;
+          const attackNoise = (noise - noiseMemory) * Math.exp(-onsetAge * (isGuitar ? 48 : 88));
+          let body = 0;
+          let bodyWeight = 0;
+
+          for (let stringIndex = 0; stringIndex < stringCount; stringIndex += 1) {
+            const detune = stringDetunes[stringIndex] || 0;
+            const stringFreq = smoothedFreq * (1 + detune);
+            const stiffness = isGuitar
+              ? 0.0012 + (1 - coherence) * 0.0008
+              : 0.0016 + highFreqFactor * 0.001;
+            const ratio2 = 2 * (1 + stiffness * 0.7);
+            const ratio3 = 3 * (1 + stiffness * 1.7);
+            const ratio4 = 4 * (1 + stiffness * 3.1);
+            const baseIncrement = (TAU * stringFreq) / RENDER_SAMPLE_RATE;
+            phase1[stringIndex] += baseIncrement;
+            phase2[stringIndex] += baseIncrement * ratio2;
+            phase3[stringIndex] += baseIncrement * ratio3;
+            phase4[stringIndex] += baseIncrement * ratio4;
+
+            const stringBody = isGuitar
+              ? Math.sin(phase1[stringIndex]) * 0.82
+                + Math.sin(phase2[stringIndex]) * (0.16 + 0.14 * brightnessDecay)
+                + Math.sin(phase3[stringIndex]) * (0.05 + 0.08 * brightnessDecay)
+                + Math.sin(phase4[stringIndex]) * (0.02 + 0.035 * brightnessDecay)
+              : Math.sin(phase1[stringIndex]) * 0.74
+                + Math.sin(phase2[stringIndex]) * (0.16 + 0.18 * brightnessDecay)
+                + Math.sin(phase3[stringIndex]) * (0.08 + 0.1 * brightnessDecay)
+                + Math.sin(phase4[stringIndex]) * (0.03 + 0.055 * brightnessDecay);
+            body += stringBody;
+            bodyWeight += 1;
+          }
+
+          if (bodyWeight > 0) {
+            body /= bodyWeight;
+          }
+
+          const instrumentBody = isGuitar
+            ? body + attackNoise * (0.05 + 0.05 * transient)
+            : Math.tanh(body * 1.22) + attackNoise * (0.035 + 0.04 * transient);
+          const envelope = amplitude * attackEnv * (0.22 + 0.78 * bodyDecay) * (0.86 + 0.14 * (1 - noisiness));
+          output[sample] += envelope * transientShape * instrumentBody;
+          onsetAgeSamples += 1;
+        }
+
+        lastFreq = freq1;
+      }
+    }
+
+    return output;
+  }
+
   function deterministicNoise(seed) {
     const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453123;
     return (x - Math.floor(x)) * 2 - 1;
@@ -2547,6 +2750,32 @@
     }
 
     return output;
+  }
+
+  function buildPianoLikeAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
+    const pianoVoices = buildInstrumentTrackAudioData(analysis, totalSamples, tracks, "piano");
+    const residual = buildDrawResidualAudioData(analysis, tracks);
+    const output = new Float32Array(totalSamples);
+    for (let i = 0; i < totalSamples; i += 1) {
+      output[i] = pianoVoices[i] + residual[i] * 0.16;
+    }
+    return {
+      samples: output,
+      tracks
+    };
+  }
+
+  function buildGuitarLikeAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
+    const guitarVoices = buildInstrumentTrackAudioData(analysis, totalSamples, tracks, "guitar");
+    const residual = buildDrawResidualAudioData(analysis, tracks);
+    const output = new Float32Array(totalSamples);
+    for (let i = 0; i < totalSamples; i += 1) {
+      output[i] = guitarVoices[i] + residual[i] * 0.12;
+    }
+    return {
+      samples: output,
+      tracks
+    };
   }
 
   function buildGeometryCoherenceAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
@@ -2957,48 +3186,52 @@
     const bass = buildBassEventAudioData(totalSamples);
     const score = buildScoreEventAudioData(totalSamples);
     const output = new Float32Array(totalSamples);
-    let tracks = [];
+    let tracks = extractDrawVoiceTracks(analysis);
     let iterations = 0;
+    let drawRender;
 
-    if (state.scoreEvents.length) {
-      for (let i = 0; i < output.length; i += 1) {
-        output[i] = score[i] + bass[i];
-      }
-    } else {
-      tracks = extractDrawVoiceTracks(analysis);
-      let drawRender;
+    switch (state.renderMode) {
+      case "independent":
+        drawRender = buildIndependentOscillatorAudioData(analysis, totalSamples, tracks);
+        break;
+      case "piano":
+        drawRender = buildPianoLikeAudioData(analysis, totalSamples, tracks);
+        break;
+      case "guitar":
+        drawRender = buildGuitarLikeAudioData(analysis, totalSamples, tracks);
+        break;
+      case "spectral":
+        drawRender = buildSpectralBinAudioData(analysis, totalSamples);
+        break;
+      case "griffin":
+        drawRender = buildGriffinLimAudioData(analysis, totalSamples, { tracks });
+        break;
+      case "hybrid":
+        drawRender = buildHybridAudioData(analysis, totalSamples, tracks);
+        break;
+      case "geometry":
+      default:
+        drawRender = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
+        break;
+    }
 
-      switch (state.renderMode) {
-        case "independent":
-          drawRender = buildIndependentOscillatorAudioData(analysis, totalSamples, tracks);
-          break;
-        case "spectral":
-          drawRender = buildSpectralBinAudioData(analysis, totalSamples);
-          break;
-        case "griffin":
-          drawRender = buildGriffinLimAudioData(analysis, totalSamples, { tracks });
-          break;
-        case "hybrid":
-          drawRender = buildHybridAudioData(analysis, totalSamples, tracks);
-          break;
-        case "geometry":
-        default:
-          drawRender = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
-          break;
-      }
-
-      iterations = drawRender.iterations || 0;
-      for (let i = 0; i < output.length; i += 1) {
-        output[i] = drawRender.samples[i] + bass[i];
-      }
+    iterations = drawRender.iterations || 0;
+    for (let i = 0; i < output.length; i += 1) {
+      output[i] = drawRender.samples[i] + score[i] + bass[i];
     }
 
     normalizeAudioData(output);
     applyEdgeFade(output);
+    const scoreModeLabel = state.scoreEvents.length ? `${currentScoreProfile().label} note events` : "";
+    const hasDrawTracks = tracks.length > 0;
     return {
       samples: output,
       iterations,
-      modeLabel: state.scoreEvents.length ? `${currentScoreProfile().label} note events` : renderModeName(state.renderMode),
+      modeLabel: scoreModeLabel
+        ? hasDrawTracks
+          ? `${renderModeName(state.renderMode)} + ${scoreModeLabel}`
+          : scoreModeLabel
+        : renderModeName(state.renderMode),
       tracks,
       analysis
     };
@@ -3503,38 +3736,7 @@
 
   function paintImportedScore(notes) {
     drawData.fill(0);
-    const crispScoreMode = isScoreSheetMode();
-    for (const note of notes) {
-      const freq = midiToFreq(note.midi);
-      const startCol = colFromTime(note.startSec);
-      const endCol = Math.max(startCol + 1, colFromTime(note.startSec + note.durationSec));
-      const centerRow = rowFromFreq(freq);
-      const velocity = clamp(note.velocity || 0.78, 0.2, 1);
-      const amplitude = 0.26 + velocity * 0.34;
-      const widthRows = crispScoreMode ? 0 : 1;
-
-      for (let col = startCol; col <= endCol; col += 1) {
-        const edgeBlend = crispScoreMode
-          ? 1
-          : col === startCol || col === endCol
-            ? 0.64
-            : 1;
-        for (let row = centerRow - widthRows; row <= centerRow + widthRows; row += 1) {
-          const rowDistance = Math.abs(row - centerRow);
-          const rowGain = crispScoreMode
-            ? 1
-            : rowDistance === 0
-              ? 1
-              : rowDistance === 1
-                ? 0.58
-                : 0.3;
-          setAmplitude(drawData, col, row, amplitude * edgeBlend * rowGain);
-        }
-      }
-      if (!crispScoreMode) {
-        stampGaussian({ col: startCol, row: centerRow }, amplitude * 0.24, 0.38, drawData);
-      }
-    }
+    void notes;
   }
 
   function importParsedScore(parsedScore) {
@@ -3891,7 +4093,6 @@
     }
 
     beginUndoGesture();
-    clearImportedScoreEvents();
 
     state.pointerId = event.pointerId;
     state.drawing = true;
@@ -3996,8 +4197,8 @@
   }
 
   function setViewOffset(nextOffset, options = {}) {
-    const next = clamp(Math.round(nextOffset), 0, maxViewOffset());
-    const changed = next !== state.viewOffsetCol;
+    const next = clamp(Number(nextOffset) || 0, 0, maxViewOffset());
+    const changed = Math.abs(next - state.viewOffsetCol) > 0.0001;
     state.viewOffsetCol = next;
     if (editorViewSelect) {
       state.editorView = editorViewSelect.value || "spectrogram";
@@ -4020,10 +4221,10 @@
 
   function followPlaybackViewport(options = {}) {
     const playCol = playheadColumn();
-    const halfWindow = visibleColCount() * 0.5;
+    const halfWindow = Math.max(1, visibleColCount() - 1) * 0.5;
     const targetOffset = clamp(playCol - halfWindow, 0, maxViewOffset());
-    const shouldAdvance = targetOffset > state.viewOffsetCol + 0.5;
-    const shouldRealignBackward = options.allowBackward && targetOffset < state.viewOffsetCol - 0.5;
+    const shouldAdvance = targetOffset > state.viewOffsetCol + 0.0001;
+    const shouldRealignBackward = options.allowBackward && targetOffset < state.viewOffsetCol - 0.0001;
     if (shouldAdvance || shouldRealignBackward) {
       setViewOffset(targetOffset, { render: false });
     }
