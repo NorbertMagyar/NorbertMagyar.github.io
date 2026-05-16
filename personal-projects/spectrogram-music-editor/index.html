@@ -244,6 +244,7 @@
                   <button id="stop-btn" type="button" class="action-btn">Stop</button>
                   <button id="render-btn" type="button" class="action-btn">Render</button>
                   <button id="export-btn" type="button" class="action-btn">Export WAV</button>
+                  <button id="undo-btn" type="button" class="action-btn">Undo</button>
                   <button id="clear-btn" type="button" class="action-btn danger-btn">Clear</button>
                 </div>
                 <div class="button-row tool-row" role="toolbar" aria-label="Tool selection">
@@ -347,7 +348,7 @@
                 </label>
                 <label class="control-stack">
                   <span>Duration: <output id="duration-out">6.0 s</output></span>
-                  <input id="duration-input" type="range" min="1" max="60" step="0.25" value="6" />
+                  <input id="duration-input" type="range" min="1" max="900" step="0.25" value="6" />
                 </label>
                 <label class="control-stack">
                   <span>Min frequency: <output id="minfreq-out">80 Hz</output></span>
@@ -396,6 +397,7 @@
                 <h3>Shortcuts</h3>
                 <p><code>1..5</code> tool, <code>[</code>/<code>]</code> size, <code>-</code>/<code>=</code> strength</p>
                 <p><code>Space</code> play/pause, <code>S</code> stop, <code>C</code> clear, <code>G</code> grid</p>
+                <p><code>Ctrl+Z</code> / <code>Cmd+Z</code> undo the last mouse drag</p>
                 <p><code>Shift</code> while using line snaps to horizontal or vertical</p>
               </section>
             </aside>

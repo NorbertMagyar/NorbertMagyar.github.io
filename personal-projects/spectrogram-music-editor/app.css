@@ -122,6 +122,12 @@ select:hover {
   transform: translateY(-1px);
 }
 
+.action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  transform: none;
+}
+
 .primary-btn {
   background: linear-gradient(135deg, #1f86ff, #53c5ff);
   border-color: transparent;

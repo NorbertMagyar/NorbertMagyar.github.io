@@ -34,6 +34,8 @@
     const HYBRID_GRIFFIN_LIM_ITERATIONS = 8;
     const STFT_SIZE = 512;
     const STFT_HOP = 128;
+    const MIN_VIEW_COLS = 24;
+    const MAX_UNDO_STEPS = 16;
 
     const canvas = document.getElementById("spectrogram-canvas");
     if (!canvas) {
@@ -52,6 +54,7 @@
     const stopButton = document.getElementById("stop-btn");
     const renderButton = document.getElementById("render-btn");
     const exportButton = document.getElementById("export-btn");
+    const undoButton = document.getElementById("undo-btn");
     const clearButton = document.getElementById("clear-btn");
     const presetButton = document.getElementById("preset-btn");
     const presetSelect = document.getElementById("preset-select");
@@ -146,6 +149,7 @@
       isDraggingTimelineThumb: false,
       timelineDragOffsetPx: 0,
       viewOffsetCol: 0,
+      viewColSpan: VIEW_COLS,
       rafId: 0,
       animationHoldId: 0,
       holdStartMs: 0,
@@ -156,6 +160,7 @@
       playStartedAt: 0,
       playDurationSeconds: durationSeconds(),
       bassEvents,
+      scoreEvents: [],
       currentBasslinePreset: "none",
       editorView: "spectrogram",
       renderMode: "geometry",
@@ -165,6 +170,9 @@
       diagnosticsCache: null,
       latestRenderInfo: null,
       lastPlaybackLoopIndex: 0,
+      undoStack: [],
+      pendingUndoSnapshot: null,
+      pendingUndoVersion: -1,
       freeMinFreq: Number(minFreqInput.value),
       freeMaxFreq: Number(maxFreqInput.value)
     };
@@ -329,8 +337,17 @@
     return clamp(Math.round(durationSeconds() * COLS_PER_SECOND), VIEW_COLS, GRID_COLS);
   }
 
+  function clampViewSpan() {
+    state.viewColSpan = clamp(
+      Math.round(state.viewColSpan || VIEW_COLS),
+      Math.min(MIN_VIEW_COLS, trackColCount()),
+      trackColCount()
+    );
+  }
+
   function visibleColCount() {
-    return Math.min(VIEW_COLS, trackColCount());
+    clampViewSpan();
+    return Math.min(state.viewColSpan, trackColCount());
   }
 
   function maxViewOffset() {
@@ -338,6 +355,7 @@
   }
 
   function clampViewOffset() {
+    clampViewSpan();
     state.viewOffsetCol = clamp(state.viewOffsetCol, 0, maxViewOffset());
   }
 
@@ -392,6 +410,38 @@
     setPlayheadRatio(col / Math.max(1, trackColCount() - 1));
   }
 
+  function setViewWindow(nextOffset, nextSpan, options = {}) {
+    state.viewColSpan = clamp(
+      Math.round(nextSpan),
+      Math.min(MIN_VIEW_COLS, trackColCount()),
+      trackColCount()
+    );
+    state.viewOffsetCol = clamp(Math.round(nextOffset), 0, maxViewOffset());
+    updateOutputs();
+    if (options.render !== false) {
+      renderCanvas();
+    }
+  }
+
+  function zoomViewAtColumn(anchorCol, zoomFactor) {
+    const oldSpan = visibleColCount();
+    const nextSpan = clamp(
+      Math.round(oldSpan * zoomFactor),
+      Math.min(MIN_VIEW_COLS, trackColCount()),
+      trackColCount()
+    );
+    if (nextSpan === oldSpan) {
+      return;
+    }
+
+    const startCol = visibleStartCol();
+    const anchorRatio = oldSpan > 1
+      ? clamp((anchorCol - startCol) / Math.max(1, oldSpan - 1), 0, 1)
+      : 0.5;
+    const nextOffset = anchorCol - anchorRatio * Math.max(1, nextSpan - 1);
+    setViewWindow(nextOffset, nextSpan);
+  }
+
   function defaultCanvasCursor() {
     return state.tool === "line" ? "cell" : "crosshair";
   }
@@ -418,6 +468,104 @@
     state.renderedWav = null;
     state.dataVersion += 1;
     state.diagnosticsCache = null;
+  }
+
+  function clearImportedScoreEvents() {
+    if (state.scoreEvents.length) {
+      state.scoreEvents = [];
+    }
+  }
+
+  function cloneEventList(events) {
+    return events.map((event) => ({ ...event }));
+  }
+
+  function captureEditorSnapshot() {
+    return {
+      drawData: drawData.slice(),
+      basslineData: basslineData.slice(),
+      bassEvents: cloneEventList(bassEvents),
+      scoreEvents: cloneEventList(state.scoreEvents),
+      currentBasslinePreset: state.currentBasslinePreset,
+      dataVersion: state.dataVersion
+    };
+  }
+
+  function restoreEditorSnapshot(snapshot) {
+    drawData.set(snapshot.drawData);
+    basslineData.set(snapshot.basslineData);
+    bassEvents.length = 0;
+    bassEvents.push(...cloneEventList(snapshot.bassEvents));
+    state.scoreEvents = cloneEventList(snapshot.scoreEvents);
+    state.currentBasslinePreset = snapshot.currentBasslinePreset;
+    markDirty();
+  }
+
+  function updateUndoButton() {
+    if (!undoButton) {
+      return;
+    }
+    const canUndo = state.undoStack.length > 0;
+    undoButton.disabled = !canUndo;
+    undoButton.title = canUndo
+      ? "Undo the last mouse drag (Ctrl+Z / Cmd+Z)"
+      : "Nothing to undo yet";
+  }
+
+  function resetUndoHistory() {
+    state.undoStack = [];
+    state.pendingUndoSnapshot = null;
+    state.pendingUndoVersion = -1;
+    updateUndoButton();
+  }
+
+  function beginUndoGesture() {
+    state.pendingUndoSnapshot = captureEditorSnapshot();
+    state.pendingUndoVersion = state.dataVersion;
+  }
+
+  function commitUndoGesture() {
+    if (!state.pendingUndoSnapshot) {
+      return;
+    }
+    if (state.dataVersion !== state.pendingUndoVersion) {
+      state.undoStack.push(state.pendingUndoSnapshot);
+      if (state.undoStack.length > MAX_UNDO_STEPS) {
+        state.undoStack.shift();
+      }
+    }
+    state.pendingUndoSnapshot = null;
+    state.pendingUndoVersion = -1;
+    updateUndoButton();
+  }
+
+  function cancelUndoGesture() {
+    state.pendingUndoSnapshot = null;
+    state.pendingUndoVersion = -1;
+    updateUndoButton();
+  }
+
+  function undoLastGesture() {
+    if (state.drawing || state.isScrubbingPlayhead) {
+      return;
+    }
+    if (!state.undoStack.length) {
+      setStatus("Nothing to undo.");
+      updateUndoButton();
+      return;
+    }
+    stopHoldLoop();
+    const snapshot = state.undoStack.pop();
+    restoreEditorSnapshot(snapshot);
+    state.pointerId = null;
+    state.lastPointer = null;
+    state.currentPointer = null;
+    state.lineStart = null;
+    state.linePreview = null;
+    state.drawing = false;
+    updateOutputs();
+    stopPlayback("Undid the last drawing gesture.");
+    updateUndoButton();
   }
 
   function createAudioContext() {
@@ -466,6 +614,7 @@
     if (loopToggle) {
       loopToggle.checked = state.loopPlayback;
     }
+    updateUndoButton();
     const range = visibleTimeRange();
     timelineOut.textContent = `${range.start.toFixed(2)} s - ${range.end.toFixed(2)} s`;
     if (timelineTrack && timelineThumb) {
@@ -2270,6 +2419,72 @@
     return output;
   }
 
+  function buildScoreEventAudioData(totalSamples) {
+    const output = new Float32Array(totalSamples);
+    if (!state.scoreEvents.length) {
+      return output;
+    }
+
+    const profile = currentScoreProfile();
+    const isGuitar = profile && state.editorView === "guitar-score";
+    const isPiano = profile && state.editorView === "piano-score";
+
+    function sampleIndexAt(seconds) {
+      return clamp(Math.floor(seconds * RENDER_SAMPLE_RATE), 0, Math.max(0, totalSamples - 1));
+    }
+
+    for (const note of state.scoreEvents) {
+      const startSample = sampleIndexAt(note.startSec);
+      const duration = Math.max(0.02, note.durationSec);
+      const sampleLength = Math.min(totalSamples - startSample, Math.ceil(duration * RENDER_SAMPLE_RATE));
+      if (sampleLength <= 0) {
+        continue;
+      }
+
+      let phase1 = deterministicPhase(note.midi * 0.37 + note.startSec * 1.9);
+      let phase2 = (phase1 * 2) % TAU;
+      let phase3 = (phase1 * 3) % TAU;
+      let noiseMemory = 0;
+      const velocity = clamp(note.velocity || 0.78, 0.18, 1);
+      const freq = midiToFreq(note.midi);
+      const releaseSeconds = isGuitar ? Math.min(0.09, duration * 0.24) : Math.min(0.16, duration * 0.22);
+      const attackSeconds = isGuitar ? 0.003 : 0.004;
+
+      for (let i = 0; i < sampleLength; i += 1) {
+        const time = i / RENDER_SAMPLE_RATE;
+        const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
+        phase1 += (TAU * freq) / RENDER_SAMPLE_RATE;
+        phase2 += (TAU * freq * 2) / RENDER_SAMPLE_RATE;
+        phase3 += (TAU * freq * 3) / RENDER_SAMPLE_RATE;
+
+        const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
+        const releaseStart = Math.max(0, duration - releaseSeconds);
+        const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
+        const sustainEnv = isGuitar
+          ? Math.exp(-time * 2.8) * (0.88 - noteT * 0.12)
+          : (0.96 - noteT * 0.18) * Math.exp(-time * 0.8);
+        const env = attackEnv * releaseEnv * Math.max(0, sustainEnv) * (0.22 + velocity * 0.78);
+
+        let body;
+        if (isGuitar) {
+          const pluckNoise = deterministicNoise((startSample + i) * 2.31 + note.midi * 1.7);
+          noiseMemory = noiseMemory * 0.52 + pluckNoise * 0.48;
+          const pluck = (pluckNoise - noiseMemory) * Math.exp(-time * 42) * 0.07;
+          body = Math.sin(phase1) * 0.82 + Math.sin(phase2) * 0.17 + Math.sin(phase3) * 0.08 + pluck;
+        } else if (isPiano) {
+          body = Math.sin(phase1) * 0.76 + Math.sin(phase2) * 0.24 + Math.sin(phase3) * 0.12;
+          body = Math.tanh(body * 1.32);
+        } else {
+          body = Math.sin(phase1) * 0.88 + Math.sin(phase2) * 0.12 + Math.sin(phase3) * 0.04;
+        }
+
+        output[startSample + i] += env * body;
+      }
+    }
+
+    return output;
+  }
+
   function buildGeometryCoherenceAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
     const drawVoices = buildDrawVoiceAudioData(analysis, tracks);
     const drawResidual = buildDrawResidualAudioData(analysis, tracks);
@@ -2675,39 +2890,51 @@
     const analysis = analyzeColumns();
     const totalSamples = Math.max(1, Math.floor(durationSeconds() * RENDER_SAMPLE_RATE));
     state.playDurationSeconds = durationSeconds();
-    const tracks = extractDrawVoiceTracks(analysis);
-    let drawRender;
-
-    switch (state.renderMode) {
-      case "independent":
-        drawRender = buildIndependentOscillatorAudioData(analysis, totalSamples, tracks);
-        break;
-      case "spectral":
-        drawRender = buildSpectralBinAudioData(analysis, totalSamples);
-        break;
-      case "griffin":
-        drawRender = buildGriffinLimAudioData(analysis, totalSamples, { tracks });
-        break;
-      case "hybrid":
-        drawRender = buildHybridAudioData(analysis, totalSamples, tracks);
-        break;
-      case "geometry":
-      default:
-        drawRender = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
-        break;
-    }
-
     const bass = buildBassEventAudioData(totalSamples);
+    const score = buildScoreEventAudioData(totalSamples);
     const output = new Float32Array(totalSamples);
-    for (let i = 0; i < output.length; i += 1) {
-      output[i] = drawRender.samples[i] + bass[i];
+    let tracks = [];
+    let iterations = 0;
+
+    if (state.scoreEvents.length) {
+      for (let i = 0; i < output.length; i += 1) {
+        output[i] = score[i] + bass[i];
+      }
+    } else {
+      tracks = extractDrawVoiceTracks(analysis);
+      let drawRender;
+
+      switch (state.renderMode) {
+        case "independent":
+          drawRender = buildIndependentOscillatorAudioData(analysis, totalSamples, tracks);
+          break;
+        case "spectral":
+          drawRender = buildSpectralBinAudioData(analysis, totalSamples);
+          break;
+        case "griffin":
+          drawRender = buildGriffinLimAudioData(analysis, totalSamples, { tracks });
+          break;
+        case "hybrid":
+          drawRender = buildHybridAudioData(analysis, totalSamples, tracks);
+          break;
+        case "geometry":
+        default:
+          drawRender = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
+          break;
+      }
+
+      iterations = drawRender.iterations || 0;
+      for (let i = 0; i < output.length; i += 1) {
+        output[i] = drawRender.samples[i] + bass[i];
+      }
     }
 
     normalizeAudioData(output);
     applyEdgeFade(output);
     return {
       samples: output,
-      iterations: drawRender.iterations || 0,
+      iterations,
+      modeLabel: state.scoreEvents.length ? `${currentScoreProfile().label} note events` : renderModeName(state.renderMode),
       tracks,
       analysis
     };
@@ -2769,7 +2996,7 @@
     state.renderedBuffer = buffer;
     state.playDurationSeconds = buffer.duration;
     state.latestRenderInfo = {
-      mode: state.renderMode,
+      mode: renderResult.modeLabel,
       iterations: renderResult.iterations || 0,
       elapsedMs,
       sampleCount: samples.length
@@ -2787,7 +3014,7 @@
     }
     state.renderedWav = encodeWav(samples, RENDER_SAMPLE_RATE);
     state.dirty = false;
-    const modeSummary = renderModeName(state.renderMode);
+    const modeSummary = renderResult.modeLabel;
     const iterationSummary = renderResult.iterations > 0 ? ` · ${renderResult.iterations} iterations` : "";
     setStatus(`Rendered using: ${modeSummary} · ${elapsedMs.toFixed(1)} ms · ${samples.length} samples${iterationSummary}`);
     return buffer;
@@ -2846,6 +3073,8 @@
 
   function clearSpectrogram() {
     drawData.fill(0);
+    clearImportedScoreEvents();
+    resetUndoHistory();
     markDirty();
     stopPlayback("Drawing layer cleared.");
     renderCanvas();
@@ -2855,6 +3084,7 @@
     basslineData.fill(0);
     bassEvents.length = 0;
     state.currentBasslinePreset = "none";
+    resetUndoHistory();
     markDirty();
     stopPlayback("Bass line cleared.");
     renderCanvas();
@@ -3247,14 +3477,22 @@
     const maxDuration = Number(durationInput.max);
     const importedDuration = Math.max(2, parsedScore.totalDurationSec + 0.5);
     const targetDuration = clamp(Math.ceil(importedDuration * 4) / 4, Number(durationInput.min), maxDuration);
-    const wasClipped = importedDuration > maxDuration;
+    const wasScaled = importedDuration > maxDuration;
+    const scale = wasScaled ? targetDuration / importedDuration : 1;
+    const scaledNotes = parsedScore.notes.map((note) => ({
+      ...note,
+      startSec: note.startSec * scale,
+      durationSec: Math.max(0.02, note.durationSec * scale)
+    }));
     durationInput.value = String(targetDuration);
     state.viewOffsetCol = 0;
     updateOutputs();
-    paintImportedScore(parsedScore.notes);
+    state.scoreEvents = scaledNotes;
+    paintImportedScore(scaledNotes);
+    resetUndoHistory();
     markDirty();
     stopPlayback(
-      `Imported ${parsedScore.notes.length} notes from ${parsedScore.format} into ${currentScoreProfile().label}${wasClipped ? ` (clipped to ${maxDuration} s)` : ""}.`
+      `Imported ${parsedScore.notes.length} notes from ${parsedScore.format} into ${currentScoreProfile().label}${wasScaled ? ` (time-scaled to ${targetDuration} s)` : ""}.`
     );
     renderCanvas();
   }
@@ -3272,6 +3510,8 @@
 
   function applyPreset(name) {
     drawData.fill(0);
+    clearImportedScoreEvents();
+    resetUndoHistory();
     const cols = trackColCount();
 
     if (name === "riser") {
@@ -3452,6 +3692,7 @@
     }
 
     if (name === "none") {
+      resetUndoHistory();
       markDirty();
       stopPlayback("Bass line cleared.");
       renderCanvas();
@@ -3542,6 +3783,7 @@
       });
     }
 
+    resetUndoHistory();
     markDirty();
     stopPlayback(`Bass line preset "${name}" loaded.`);
     renderCanvas();
@@ -3570,6 +3812,9 @@
     if (state.isPlaying) {
       stopPlayback("Playback stopped for editing.");
     }
+
+    beginUndoGesture();
+    clearImportedScoreEvents();
 
     state.pointerId = event.pointerId;
     state.drawing = true;
@@ -3652,6 +3897,7 @@
     state.lineStart = null;
     state.linePreview = null;
     stopHoldLoop();
+    commitUndoGesture();
     renderCanvas();
   }
 
@@ -3660,6 +3906,16 @@
     updateCursorReadout(null);
     updateCanvasCursor(null);
     renderCanvas();
+  }
+
+  function handleCanvasWheel(event) {
+    const point = canvasToGrid(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+    event.preventDefault();
+    const zoomFactor = event.deltaY < 0 ? 0.84 : 1.19;
+    zoomViewAtColumn(point.col, zoomFactor);
   }
 
   function setViewOffset(nextOffset, options = {}) {
@@ -3779,6 +4035,7 @@
           state.freeMaxFreq = Number(maxFreqInput.value);
         }
         if (input === durationInput) {
+          clampViewSpan();
           clampViewOffset();
         }
         updateOutputs();
@@ -3896,6 +4153,9 @@
     stopButton.addEventListener("click", () => stopPlayback("Playback stopped."));
     renderButton.addEventListener("click", () => renderIfNeeded("audio preview"));
     exportButton.addEventListener("click", exportWav);
+    if (undoButton) {
+      undoButton.addEventListener("click", undoLastGesture);
+    }
     clearButton.addEventListener("click", clearSpectrogram);
     presetButton.addEventListener("click", () => applyPreset(presetSelect.value));
     basslineButton.addEventListener("click", () => applyBassLinePreset(basslineSelect.value));
@@ -3910,6 +4170,7 @@
     canvas.addEventListener("pointerup", handlePointerUp);
     canvas.addEventListener("pointercancel", handlePointerUp);
     canvas.addEventListener("pointerleave", handlePointerLeave);
+    canvas.addEventListener("wheel", handleCanvasWheel, { passive: false });
     window.addEventListener("resize", () => {
       updateOutputs();
       renderCanvas();
@@ -3917,6 +4178,12 @@
 
     window.addEventListener("keydown", (event) => {
       if (event.target && /input|select|textarea|button/i.test(event.target.tagName)) {
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        undoLastGesture();
         return;
       }
 
