@@ -292,6 +292,14 @@
                     <button id="preset-btn" type="button" class="action-btn">Load</button>
                   </div>
                 </label>
+                <label class="control-stack">
+                  <span>Import score file</span>
+                  <div class="inline-row">
+                    <button id="score-import-btn" type="button" class="action-btn">Upload Score</button>
+                    <input id="score-import-input" type="file" accept=".musicxml,.xml,.mid,.midi" hidden />
+                  </div>
+                </label>
+                <p class="card-note">Supports MusicXML (<code>.musicxml</code>, <code>.xml</code>) and MIDI (<code>.mid</code>, <code>.midi</code>). Compressed <code>.mxl</code> is not supported yet.</p>
               </section>
 
               <section class="control-card">
@@ -319,6 +327,14 @@
 
               <section class="control-card">
                 <h3>Synthesis</h3>
+                <label class="control-stack" for="editor-view-select">
+                  <span>Editor view</span>
+                  <select id="editor-view-select">
+                    <option value="spectrogram">Free spectrogram</option>
+                    <option value="guitar-score">Guitar score sheet</option>
+                    <option value="piano-score">Grand piano score sheet</option>
+                  </select>
+                </label>
                 <label class="control-stack" for="render-mode-select">
                   <span id="render-mode-label">Render mode</span>
                   <select id="render-mode-select">

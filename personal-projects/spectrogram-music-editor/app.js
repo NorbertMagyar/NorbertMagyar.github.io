@@ -55,6 +55,8 @@
     const clearButton = document.getElementById("clear-btn");
     const presetButton = document.getElementById("preset-btn");
     const presetSelect = document.getElementById("preset-select");
+    const scoreImportButton = document.getElementById("score-import-btn");
+    const scoreImportInput = document.getElementById("score-import-input");
     const basslineButton = document.getElementById("bassline-btn");
     const clearBasslineButton = document.getElementById("clear-bassline-btn");
     const basslineSelect = document.getElementById("bassline-select");
@@ -75,6 +77,7 @@
     const sizeInput = document.getElementById("size-input");
     const strengthInput = document.getElementById("strength-input");
     const densityInput = document.getElementById("density-input");
+    const editorViewSelect = document.getElementById("editor-view-select");
     const loopToggle = document.getElementById("loop-toggle");
     const gridToggle = document.getElementById("grid-toggle");
 
@@ -101,6 +104,26 @@
     const basslineData = new Float32Array(GRID_COLS * GRID_ROWS);
     const bassEvents = [];
     const margins = { left: 74, right: 28, top: 26, bottom: 54 };
+    const SCORE_VIEW_PROFILES = {
+      "guitar-score": {
+        label: "guitar score sheet",
+        axisLabel: "Pitch / Guitar Note",
+        minMidi: 40,
+        maxMidi: 88,
+        padSemitones: 2,
+        anchorMidis: [40, 45, 50, 55, 59, 64],
+        labelMode: "anchors"
+      },
+      "piano-score": {
+        label: "grand piano score sheet",
+        axisLabel: "Pitch / Piano Note",
+        minMidi: 21,
+        maxMidi: 108,
+        padSemitones: 2,
+        anchorMidis: [21, 36, 48, 60, 72, 84, 96, 108],
+        labelMode: "c-octaves"
+      }
+    };
 
     const state = {
       tool: "brush",
@@ -134,13 +157,16 @@
       playDurationSeconds: durationSeconds(),
       bassEvents,
       currentBasslinePreset: "none",
+      editorView: "spectrogram",
       renderMode: "geometry",
       showPhaseDiagnostics: false,
       loopPlayback: false,
       dataVersion: 0,
       diagnosticsCache: null,
       latestRenderInfo: null,
-      lastPlaybackLoopIndex: 0
+      lastPlaybackLoopIndex: 0,
+      freeMinFreq: Number(minFreqInput.value),
+      freeMaxFreq: Number(maxFreqInput.value)
     };
 
   function plotWidth() {
@@ -156,11 +182,11 @@
   }
 
   function minFrequency() {
-    return Number(minFreqInput.value);
+    return effectiveMinFrequency();
   }
 
   function maxFrequency() {
-    return Number(maxFreqInput.value);
+    return effectiveMaxFrequency();
   }
 
   function brushRadiusCells() {
@@ -177,6 +203,58 @@
 
   function basslineBpm() {
     return Number(basslineBpmInput.value);
+  }
+
+  function midiToFreq(midi) {
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  function freqToMidi(freq) {
+    return 69 + 12 * Math.log2(Math.max(freq, 0.0001) / 440);
+  }
+
+  function noteNameFromMidi(midi) {
+    const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    const rounded = Math.round(midi);
+    const octave = Math.floor(rounded / 12) - 1;
+    return `${names[((rounded % 12) + 12) % 12]}${octave}`;
+  }
+
+  function currentScoreProfile() {
+    return SCORE_VIEW_PROFILES[state.editorView] || null;
+  }
+
+  function isScoreSheetMode() {
+    return Boolean(currentScoreProfile());
+  }
+
+  function effectiveMinFrequency() {
+    const profile = currentScoreProfile();
+    return profile
+      ? midiToFreq(profile.minMidi - profile.padSemitones)
+      : Number(minFreqInput.value);
+  }
+
+  function effectiveMaxFrequency() {
+    const profile = currentScoreProfile();
+    return profile
+      ? midiToFreq(profile.maxMidi + profile.padSemitones)
+      : Number(maxFreqInput.value);
+  }
+
+  function applyEditorViewSettings() {
+    const profile = currentScoreProfile();
+    if (profile) {
+      minFreqInput.value = String(Math.round(midiToFreq(profile.minMidi)));
+      maxFreqInput.value = String(Math.round(midiToFreq(profile.maxMidi)));
+      minFreqInput.disabled = true;
+      maxFreqInput.disabled = true;
+    } else {
+      minFreqInput.disabled = false;
+      maxFreqInput.disabled = false;
+      minFreqInput.value = String(Math.round(state.freeMinFreq));
+      maxFreqInput.value = String(Math.round(state.freeMaxFreq));
+    }
   }
 
   function defaultBasslineBpm(name) {
@@ -355,8 +433,18 @@
   function updateOutputs() {
     clampViewOffset();
     durationOut.textContent = `${durationSeconds().toFixed(1)} s`;
-    minFreqOut.textContent = `${Math.round(minFrequency())} Hz`;
-    maxFreqOut.textContent = `${Math.round(maxFrequency())} Hz`;
+    if (editorViewSelect) {
+      editorViewSelect.value = state.editorView;
+    }
+    const minFreq = minFrequency();
+    const maxFreq = maxFrequency();
+    const scoreProfile = currentScoreProfile();
+    minFreqOut.textContent = scoreProfile
+      ? `${Math.round(midiToFreq(scoreProfile.minMidi))} Hz (${noteNameFromMidi(scoreProfile.minMidi)})`
+      : `${Math.round(minFreq)} Hz`;
+    maxFreqOut.textContent = scoreProfile
+      ? `${Math.round(midiToFreq(scoreProfile.maxMidi))} Hz (${noteNameFromMidi(scoreProfile.maxMidi)})`
+      : `${Math.round(maxFreq)} Hz`;
     gainOut.textContent = Number(gainInput.value).toFixed(2);
     sizeOut.textContent = `${Math.round(Number(sizeInput.value))} px`;
     strengthOut.textContent = currentStrength().toFixed(2);
@@ -404,15 +492,15 @@
   }
 
   function freqFromRow(row) {
-    const minFreq = minFrequency();
-    const maxFreq = Math.max(minFreq + 1, maxFrequency());
+    const minFreq = effectiveMinFrequency();
+    const maxFreq = Math.max(minFreq + 1, effectiveMaxFrequency());
     const ratio = 1 - row / (GRID_ROWS - 1);
     return minFreq * Math.pow(maxFreq / minFreq, ratio);
   }
 
   function rowFromFreq(freq) {
-    const minFreq = minFrequency();
-    const maxFreq = Math.max(minFreq + 1, maxFrequency());
+    const minFreq = effectiveMinFrequency();
+    const maxFreq = Math.max(minFreq + 1, effectiveMaxFrequency());
     const clamped = clamp(freq, minFreq, maxFreq);
     const ratio = Math.log(clamped / minFreq) / Math.log(maxFreq / minFreq);
     return clamp(Math.round((1 - ratio) * (GRID_ROWS - 1)), 0, GRID_ROWS - 1);
@@ -497,6 +585,34 @@
     offCtx.putImageData(pixelImage, 0, 0);
   }
 
+  function isNaturalMidi(midi) {
+    const pitchClass = ((midi % 12) + 12) % 12;
+    return pitchClass === 0 || pitchClass === 2 || pitchClass === 4 || pitchClass === 5
+      || pitchClass === 7 || pitchClass === 9 || pitchClass === 11;
+  }
+
+  function currentScoreGuides() {
+    const profile = currentScoreProfile();
+    if (!profile) {
+      return [];
+    }
+    const anchorMidis = new Set(profile.anchorMidis || []);
+    const guides = [];
+    for (let midi = profile.minMidi; midi <= profile.maxMidi; midi += 1) {
+      const pitchClass = ((midi % 12) + 12) % 12;
+      guides.push({
+        midi,
+        freq: midiToFreq(midi),
+        note: noteNameFromMidi(midi),
+        natural: isNaturalMidi(midi),
+        anchor: anchorMidis.has(midi),
+        showLabel: anchorMidis.has(midi)
+          || (profile.labelMode === "c-octaves" && pitchClass === 0)
+      });
+    }
+    return guides;
+  }
+
   function drawGridAndAxes() {
     const x0 = margins.left;
     const y0 = margins.top;
@@ -517,21 +633,42 @@
         ctx.moveTo(x, y0);
         ctx.lineTo(x, y0 + h);
       }
-      for (let i = 1; i < 6; i += 1) {
-        const y = y0 + (h * i) / 6;
-        ctx.moveTo(x0, y);
-        ctx.lineTo(x0 + w, y);
+      if (!isScoreSheetMode()) {
+        for (let i = 1; i < 6; i += 1) {
+          const y = y0 + (h * i) / 6;
+          ctx.moveTo(x0, y);
+          ctx.lineTo(x0 + w, y);
+        }
       }
       ctx.stroke();
 
-      ctx.strokeStyle = "rgba(214, 232, 255, 0.32)";
-      ctx.lineWidth = 1.8;
-      ctx.beginPath();
-      ctx.moveTo(x0 + w * 0.5, y0);
-      ctx.lineTo(x0 + w * 0.5, y0 + h);
-      ctx.moveTo(x0, y0 + h * 0.5);
-      ctx.lineTo(x0 + w, y0 + h * 0.5);
-      ctx.stroke();
+      if (isScoreSheetMode()) {
+        const guides = currentScoreGuides();
+        for (const guide of guides) {
+          const y = y0 + (rowFromFreq(guide.freq) / (GRID_ROWS - 1)) * h;
+          ctx.save();
+          ctx.strokeStyle = guide.anchor
+            ? "rgba(255, 208, 138, 0.44)"
+            : guide.natural
+              ? "rgba(214, 232, 255, 0.28)"
+              : "rgba(112, 148, 194, 0.16)";
+          ctx.lineWidth = guide.anchor ? 2.1 : guide.natural ? 1.4 : 0.9;
+          ctx.beginPath();
+          ctx.moveTo(x0, y);
+          ctx.lineTo(x0 + w, y);
+          ctx.stroke();
+          ctx.restore();
+        }
+      } else {
+        ctx.strokeStyle = "rgba(214, 232, 255, 0.32)";
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(x0 + w * 0.5, y0);
+        ctx.lineTo(x0 + w * 0.5, y0 + h);
+        ctx.moveTo(x0, y0 + h * 0.5);
+        ctx.lineTo(x0 + w, y0 + h * 0.5);
+        ctx.stroke();
+      }
     }
 
     ctx.fillStyle = "rgba(241, 247, 255, 0.98)";
@@ -548,24 +685,37 @@
 
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
-    const freqTicks = [maxFrequency(), 2000, 1000, 440, 220, minFrequency()]
-      .filter((value, index, array) => value >= minFrequency() && value <= maxFrequency() && array.indexOf(value) === index)
-      .sort((a, b) => b - a);
+    if (isScoreSheetMode()) {
+      const guides = currentScoreGuides().filter((guide) => guide.showLabel || guide.anchor);
+      for (const guide of guides) {
+        const row = rowFromFreq(guide.freq);
+        const y = y0 + (row / (GRID_ROWS - 1)) * h;
+        const label = guide.anchor
+          ? `${guide.note} (${Math.round(guide.freq)} Hz)`
+          : guide.note;
+        ctx.fillStyle = guide.anchor ? "rgba(255, 236, 208, 0.98)" : "rgba(241, 247, 255, 0.9)";
+        ctx.fillText(label, x0 - 10, y);
+      }
+    } else {
+      const freqTicks = [maxFrequency(), 2000, 1000, 440, 220, minFrequency()]
+        .filter((value, index, array) => value >= minFrequency() && value <= maxFrequency() && array.indexOf(value) === index)
+        .sort((a, b) => b - a);
 
-    for (const freq of freqTicks) {
-      const row = rowFromFreq(freq);
-      const y = y0 + (row / (GRID_ROWS - 1)) * h;
-      ctx.fillText(`${Math.round(freq)} Hz`, x0 - 10, y);
+      for (const freq of freqTicks) {
+        const row = rowFromFreq(freq);
+        const y = y0 + (row / (GRID_ROWS - 1)) * h;
+        ctx.fillText(`${Math.round(freq)} Hz`, x0 - 10, y);
 
-      if (gridToggle.checked) {
-        ctx.save();
-        ctx.strokeStyle = "rgba(214, 232, 255, 0.18)";
-        ctx.lineWidth = 1.35;
-        ctx.beginPath();
-        ctx.moveTo(x0, y);
-        ctx.lineTo(x0 + w, y);
-        ctx.stroke();
-        ctx.restore();
+        if (gridToggle.checked) {
+          ctx.save();
+          ctx.strokeStyle = "rgba(214, 232, 255, 0.18)";
+          ctx.lineWidth = 1.35;
+          ctx.beginPath();
+          ctx.moveTo(x0, y);
+          ctx.lineTo(x0 + w, y);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
     }
 
@@ -575,7 +725,7 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     ctx.font = "700 16px Inter, system-ui, sans-serif";
-    ctx.fillText("Frequency", 0, 0);
+    ctx.fillText(isScoreSheetMode() ? currentScoreProfile().axisLabel : "Frequency", 0, 0);
     ctx.restore();
 
     ctx.textAlign = "center";
@@ -794,7 +944,8 @@
     const time = (point.col / Math.max(1, trackColCount() - 1)) * durationSeconds();
     const freq = freqFromRow(point.row);
     const amp = combinedAmplitude(point.col, point.row);
-    cursorReadout.textContent = `t = ${time.toFixed(2)} s | f = ${Math.round(freq)} Hz | a = ${amp.toFixed(2)}`;
+    const noteText = isScoreSheetMode() ? ` | note = ${noteNameFromMidi(freqToMidi(freq))}` : "";
+    cursorReadout.textContent = `t = ${time.toFixed(2)} s | f = ${Math.round(freq)} Hz${noteText} | a = ${amp.toFixed(2)}`;
   }
 
   function setAmplitude(layer, col, row, delta) {
@@ -2717,6 +2868,408 @@
     updateCanvasCursor(state.currentPointer);
   }
 
+  function chooseScoreViewForMidiRange(minMidi, maxMidi) {
+    const guitar = SCORE_VIEW_PROFILES["guitar-score"];
+    if (minMidi >= guitar.minMidi && maxMidi <= guitar.maxMidi) {
+      return "guitar-score";
+    }
+    return "piano-score";
+  }
+
+  function parsePitchMidi(noteNode) {
+    const pitchNode = noteNode.querySelector("pitch");
+    if (!pitchNode) {
+      return null;
+    }
+    const stepNode = pitchNode.querySelector("step");
+    const octaveNode = pitchNode.querySelector("octave");
+    if (!stepNode || !octaveNode) {
+      return null;
+    }
+    const stepOffsets = {
+      C: 0,
+      D: 2,
+      E: 4,
+      F: 5,
+      G: 7,
+      A: 9,
+      B: 11
+    };
+    const step = stepNode.textContent.trim().toUpperCase();
+    const octave = Number(octaveNode.textContent);
+    const alterNode = pitchNode.querySelector("alter");
+    const alter = alterNode ? Number(alterNode.textContent) : 0;
+    if (!Number.isFinite(octave) || !(step in stepOffsets)) {
+      return null;
+    }
+    return (octave + 1) * 12 + stepOffsets[step] + alter;
+  }
+
+  function mergeAdjacentNoteEvents(notes) {
+    const sorted = notes
+      .filter((note) => note.durationSec > 0.015)
+      .sort((a, b) => a.midi - b.midi || a.startSec - b.startSec);
+    const merged = [];
+    for (const note of sorted) {
+      const last = merged[merged.length - 1];
+      if (
+        last
+        && last.midi === note.midi
+        && note.startSec <= last.startSec + last.durationSec + 0.05
+      ) {
+        const lastEnd = last.startSec + last.durationSec;
+        const noteEnd = note.startSec + note.durationSec;
+        last.durationSec = Math.max(lastEnd, noteEnd) - last.startSec;
+        last.velocity = Math.max(last.velocity, note.velocity);
+      } else {
+        merged.push({ ...note });
+      }
+    }
+    return merged.sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
+  }
+
+  function parseMusicXmlScore(text) {
+    const parser = new DOMParser();
+    const xml = parser.parseFromString(text, "application/xml");
+    if (xml.querySelector("parsererror")) {
+      throw new Error("Could not parse MusicXML file.");
+    }
+    const parts = Array.from(xml.getElementsByTagName("part"));
+    if (!parts.length) {
+      throw new Error("MusicXML file does not contain any parts.");
+    }
+
+    const notes = [];
+    let totalDurationSec = 0;
+
+    function durationDivToSeconds(durationDiv, divisions, bpm) {
+      return (durationDiv / Math.max(1, divisions)) * (60 / Math.max(1, bpm));
+    }
+
+    for (const part of parts) {
+      let divisions = 1;
+      let bpm = 120;
+      let partTimeSec = 0;
+      const measures = Array.from(part.children).filter((node) => node.tagName === "measure");
+
+      for (const measure of measures) {
+        let measureCursorSec = 0;
+        let measureMaxSec = 0;
+        let lastChordStartSec = 0;
+
+        for (const child of Array.from(measure.children)) {
+          if (child.tagName === "attributes") {
+            const divisionsNode = child.querySelector("divisions");
+            if (divisionsNode) {
+              const nextDivisions = Number(divisionsNode.textContent);
+              if (Number.isFinite(nextDivisions) && nextDivisions > 0) {
+                divisions = nextDivisions;
+              }
+            }
+            continue;
+          }
+
+          if (child.tagName === "direction") {
+            const soundTempo = child.querySelector("sound[tempo]");
+            if (soundTempo) {
+              const nextTempo = Number(soundTempo.getAttribute("tempo"));
+              if (Number.isFinite(nextTempo) && nextTempo > 0) {
+                bpm = nextTempo;
+              }
+            } else {
+              const perMinute = child.querySelector("metronome per-minute");
+              if (perMinute) {
+                const nextTempo = Number(perMinute.textContent);
+                if (Number.isFinite(nextTempo) && nextTempo > 0) {
+                  bpm = nextTempo;
+                }
+              }
+            }
+            continue;
+          }
+
+          if (child.tagName === "backup" || child.tagName === "forward") {
+            const durationNode = child.querySelector("duration");
+            const durationDiv = durationNode ? Number(durationNode.textContent) : 0;
+            const seconds = durationDivToSeconds(durationDiv, divisions, bpm);
+            if (child.tagName === "backup") {
+              measureCursorSec = Math.max(0, measureCursorSec - seconds);
+            } else {
+              measureCursorSec += seconds;
+              measureMaxSec = Math.max(measureMaxSec, measureCursorSec);
+            }
+            continue;
+          }
+
+          if (child.tagName !== "note" || child.querySelector("grace")) {
+            continue;
+          }
+
+          const durationNode = child.querySelector("duration");
+          const durationDiv = durationNode ? Number(durationNode.textContent) : 0;
+          const durationSec = durationDivToSeconds(durationDiv, divisions, bpm);
+          const isChordTone = Boolean(child.querySelector("chord"));
+          const isRest = Boolean(child.querySelector("rest"));
+          const startSec = partTimeSec + (isChordTone ? lastChordStartSec : measureCursorSec);
+
+          if (!isRest) {
+            const midi = parsePitchMidi(child);
+            if (midi !== null) {
+              notes.push({
+                startSec,
+                durationSec,
+                midi,
+                velocity: 0.78
+              });
+            }
+          }
+
+          if (!isChordTone) {
+            lastChordStartSec = measureCursorSec;
+            measureCursorSec += durationSec;
+            measureMaxSec = Math.max(measureMaxSec, measureCursorSec);
+          } else {
+            measureMaxSec = Math.max(measureMaxSec, lastChordStartSec + durationSec);
+          }
+        }
+
+        partTimeSec += Math.max(measureMaxSec, measureCursorSec);
+      }
+
+      totalDurationSec = Math.max(totalDurationSec, partTimeSec);
+    }
+
+    return {
+      format: "MusicXML",
+      notes: mergeAdjacentNoteEvents(notes),
+      totalDurationSec
+    };
+  }
+
+  function readVarLen(bytes, cursor) {
+    let value = 0;
+    let next = cursor;
+    while (next < bytes.length) {
+      const byte = bytes[next];
+      value = (value << 7) | (byte & 0x7f);
+      next += 1;
+      if ((byte & 0x80) === 0) {
+        break;
+      }
+    }
+    return { value, next };
+  }
+
+  function readUint32BE(bytes, offset) {
+    return (
+      (bytes[offset] << 24)
+      | (bytes[offset + 1] << 16)
+      | (bytes[offset + 2] << 8)
+      | bytes[offset + 3]
+    ) >>> 0;
+  }
+
+  function parseMidiScore(arrayBuffer) {
+    const bytes = new Uint8Array(arrayBuffer);
+    if (String.fromCharCode(...bytes.slice(0, 4)) !== "MThd") {
+      throw new Error("File is not a standard MIDI file.");
+    }
+    const headerLength = readUint32BE(bytes, 4);
+    const division = (bytes[12] << 8) | bytes[13];
+    if (division & 0x8000) {
+      throw new Error("SMPTE-timed MIDI files are not supported.");
+    }
+    const ticksPerQuarter = division;
+    const trackCount = (bytes[10] << 8) | bytes[11];
+    let offset = 8 + headerLength;
+    const notes = [];
+    const tempoEvents = [{ tick: 0, usPerQuarter: 500000 }];
+
+    for (let trackIndex = 0; trackIndex < trackCount; trackIndex += 1) {
+      if (String.fromCharCode(...bytes.slice(offset, offset + 4)) !== "MTrk") {
+        throw new Error("Malformed MIDI track header.");
+      }
+      const trackLength = readUint32BE(bytes, offset + 4);
+      const trackEnd = offset + 8 + trackLength;
+      let cursor = offset + 8;
+      let absoluteTick = 0;
+      let runningStatus = 0;
+      const activeNotes = new Map();
+
+      while (cursor < trackEnd) {
+        const delta = readVarLen(bytes, cursor);
+        absoluteTick += delta.value;
+        cursor = delta.next;
+        let status = bytes[cursor];
+
+        if (status < 0x80) {
+          status = runningStatus;
+        } else {
+          cursor += 1;
+          runningStatus = status;
+        }
+
+        if (status === 0xff) {
+          const metaType = bytes[cursor];
+          cursor += 1;
+          const lengthInfo = readVarLen(bytes, cursor);
+          cursor = lengthInfo.next;
+          const dataStart = cursor;
+          const dataEnd = cursor + lengthInfo.value;
+          if (metaType === 0x51 && lengthInfo.value === 3) {
+            const usPerQuarter = (bytes[dataStart] << 16) | (bytes[dataStart + 1] << 8) | bytes[dataStart + 2];
+            tempoEvents.push({ tick: absoluteTick, usPerQuarter });
+          }
+          cursor = dataEnd;
+          continue;
+        }
+
+        if (status === 0xf0 || status === 0xf7) {
+          const sysexLength = readVarLen(bytes, cursor);
+          cursor = sysexLength.next + sysexLength.value;
+          continue;
+        }
+
+        const eventType = status >> 4;
+        const channel = status & 0x0f;
+        const data1 = bytes[cursor];
+        const data2 = eventType === 0xc || eventType === 0xd ? 0 : bytes[cursor + 1];
+        cursor += eventType === 0xc || eventType === 0xd ? 1 : 2;
+
+        if (eventType === 0x9 && data2 > 0) {
+          const key = `${channel}:${data1}`;
+          if (!activeNotes.has(key)) {
+            activeNotes.set(key, []);
+          }
+          activeNotes.get(key).push({ startTick: absoluteTick, velocity: data2 / 127 });
+          continue;
+        }
+
+        if (eventType === 0x8 || (eventType === 0x9 && data2 === 0)) {
+          const key = `${channel}:${data1}`;
+          const starts = activeNotes.get(key);
+          if (starts && starts.length) {
+            const noteOn = starts.pop();
+            notes.push({
+              startTick: noteOn.startTick,
+              endTick: absoluteTick,
+              midi: data1,
+              velocity: noteOn.velocity
+            });
+          }
+        }
+      }
+
+      offset = trackEnd;
+    }
+
+    tempoEvents.sort((a, b) => a.tick - b.tick);
+    const tempoMap = [];
+    let cumulativeSec = 0;
+    let lastTick = tempoEvents[0].tick;
+    let currentUsPerQuarter = tempoEvents[0].usPerQuarter;
+    tempoMap.push({ tick: lastTick, seconds: 0, usPerQuarter: currentUsPerQuarter });
+    for (let i = 1; i < tempoEvents.length; i += 1) {
+      const event = tempoEvents[i];
+      cumulativeSec += ((event.tick - lastTick) * currentUsPerQuarter) / (ticksPerQuarter * 1000000);
+      tempoMap.push({ tick: event.tick, seconds: cumulativeSec, usPerQuarter: event.usPerQuarter });
+      lastTick = event.tick;
+      currentUsPerQuarter = event.usPerQuarter;
+    }
+
+    function tickToSeconds(targetTick) {
+      let selected = tempoMap[0];
+      for (let i = 1; i < tempoMap.length; i += 1) {
+        if (tempoMap[i].tick > targetTick) {
+          break;
+        }
+        selected = tempoMap[i];
+      }
+      return selected.seconds
+        + ((targetTick - selected.tick) * selected.usPerQuarter) / (ticksPerQuarter * 1000000);
+    }
+
+    const resolvedNotes = notes.map((note) => ({
+      startSec: tickToSeconds(note.startTick),
+      durationSec: Math.max(0.02, tickToSeconds(note.endTick) - tickToSeconds(note.startTick)),
+      midi: note.midi,
+      velocity: note.velocity
+    }));
+    const totalDurationSec = resolvedNotes.reduce(
+      (max, note) => Math.max(max, note.startSec + note.durationSec),
+      0
+    );
+
+    return {
+      format: "MIDI",
+      notes: mergeAdjacentNoteEvents(resolvedNotes),
+      totalDurationSec
+    };
+  }
+
+  function paintImportedScore(notes) {
+    drawData.fill(0);
+    for (const note of notes) {
+      const freq = midiToFreq(note.midi);
+      const startCol = colFromTime(note.startSec);
+      const endCol = Math.max(startCol + 1, colFromTime(note.startSec + note.durationSec));
+      const centerRow = rowFromFreq(freq);
+      const velocity = clamp(note.velocity || 0.78, 0.2, 1);
+      const amplitude = 0.26 + velocity * 0.34;
+      const widthRows = isScoreSheetMode() ? 2 : 1;
+
+      for (let col = startCol; col <= endCol; col += 1) {
+        const edgeBlend = col === startCol || col === endCol ? 0.64 : 1;
+        for (let row = centerRow - widthRows; row <= centerRow + widthRows; row += 1) {
+          const rowDistance = Math.abs(row - centerRow);
+          const rowGain = rowDistance === 0 ? 1 : rowDistance === 1 ? 0.58 : 0.3;
+          setAmplitude(drawData, col, row, amplitude * edgeBlend * rowGain);
+        }
+      }
+      stampGaussian({ col: startCol, row: centerRow }, amplitude * 0.24, 0.38, drawData);
+    }
+  }
+
+  function importParsedScore(parsedScore) {
+    if (!parsedScore.notes.length) {
+      throw new Error("No playable note events were found in the score.");
+    }
+
+    const minMidi = parsedScore.notes.reduce((min, note) => Math.min(min, note.midi), Infinity);
+    const maxMidi = parsedScore.notes.reduce((max, note) => Math.max(max, note.midi), -Infinity);
+    const suggestedView = chooseScoreViewForMidiRange(minMidi, maxMidi);
+    state.editorView = suggestedView;
+    if (editorViewSelect) {
+      editorViewSelect.value = suggestedView;
+    }
+    applyEditorViewSettings();
+
+    const maxDuration = Number(durationInput.max);
+    const importedDuration = Math.max(2, parsedScore.totalDurationSec + 0.5);
+    const targetDuration = clamp(Math.ceil(importedDuration * 4) / 4, Number(durationInput.min), maxDuration);
+    const wasClipped = importedDuration > maxDuration;
+    durationInput.value = String(targetDuration);
+    state.viewOffsetCol = 0;
+    updateOutputs();
+    paintImportedScore(parsedScore.notes);
+    markDirty();
+    stopPlayback(
+      `Imported ${parsedScore.notes.length} notes from ${parsedScore.format} into ${currentScoreProfile().label}${wasClipped ? ` (clipped to ${maxDuration} s)` : ""}.`
+    );
+    renderCanvas();
+  }
+
+  async function importScoreFile(file) {
+    const lowerName = file.name.toLowerCase();
+    let parsedScore;
+    if (lowerName.endsWith(".mid") || lowerName.endsWith(".midi")) {
+      parsedScore = parseMidiScore(await file.arrayBuffer());
+    } else {
+      parsedScore = parseMusicXmlScore(await file.text());
+    }
+    importParsedScore(parsedScore);
+  }
+
   function applyPreset(name) {
     drawData.fill(0);
     const cols = trackColCount();
@@ -3113,6 +3666,9 @@
     const next = clamp(Math.round(nextOffset), 0, maxViewOffset());
     const changed = next !== state.viewOffsetCol;
     state.viewOffsetCol = next;
+    if (editorViewSelect) {
+      state.editorView = editorViewSelect.value || "spectrogram";
+    }
     if (renderModeSelect) {
       state.renderMode = renderModeSelect.value || "geometry";
     }
@@ -3218,6 +3774,10 @@
     const redrawInputs = [durationInput, minFreqInput, maxFreqInput, sizeInput, strengthInput, densityInput];
     for (const input of redrawInputs) {
       input.addEventListener("input", () => {
+        if (input === minFreqInput || input === maxFreqInput) {
+          state.freeMinFreq = Number(minFreqInput.value);
+          state.freeMaxFreq = Number(maxFreqInput.value);
+        }
         if (input === durationInput) {
           clampViewOffset();
         }
@@ -3228,6 +3788,46 @@
         }
         markDirty();
         renderCanvas();
+      });
+    }
+
+    if (editorViewSelect) {
+      editorViewSelect.addEventListener("input", () => {
+        if (!isScoreSheetMode()) {
+          state.freeMinFreq = Number(minFreqInput.value);
+          state.freeMaxFreq = Number(maxFreqInput.value);
+        }
+        state.editorView = editorViewSelect.value;
+        applyEditorViewSettings();
+        updateOutputs();
+        markDirty();
+        if (state.isPlaying) {
+          const viewLabel = currentScoreProfile() ? currentScoreProfile().label : "free spectrogram";
+          stopPlayback(`Editor view switched to ${viewLabel}.`);
+        } else {
+          renderCanvas();
+        }
+      });
+    }
+
+    if (scoreImportButton && scoreImportInput) {
+      scoreImportButton.addEventListener("click", () => {
+        scoreImportInput.click();
+      });
+      scoreImportInput.addEventListener("change", async () => {
+        const [file] = Array.from(scoreImportInput.files || []);
+        if (!file) {
+          return;
+        }
+        try {
+          setStatus(`Importing score from ${file.name}...`);
+          await importScoreFile(file);
+        } catch (error) {
+          reportBootError(error);
+          setStatus(`Score import failed: ${error.message || String(error)}`);
+        } finally {
+          scoreImportInput.value = "";
+        }
       });
     }
 
@@ -3381,6 +3981,10 @@
     });
   }
 
+    if (editorViewSelect) {
+      state.editorView = editorViewSelect.value || "spectrogram";
+    }
+    applyEditorViewSettings();
     updateOutputs();
     bindControls();
     setTool("brush");
