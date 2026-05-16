@@ -174,6 +174,12 @@
                     </span>
                     <span>Line</span>
                   </button>
+                  <button type="button" class="tool-btn" data-tool="note" hidden>
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><rect x="4" y="9" width="16" height="6" rx="1.2"/><path d="M4 12h16"/></svg>
+                    </span>
+                    <span>Note</span>
+                  </button>
                   <button type="button" class="tool-btn" data-tool="erase">
                     <span class="tool-icon" aria-hidden="true">
                       <svg viewBox="0 0 24 24"><path d="M8 18h9"/><path d="M6 15l6.7-6.7a1.9 1.9 0 012.7 0l2.3 2.3a1.9 1.9 0 010 2.7L13 18H9z"/></svg>
@@ -250,7 +256,7 @@
                   <input id="bassline-bpm-input" type="range" min="80" max="300" step="1" value="132" />
                 </label>
                 <button id="clear-bassline-btn" type="button" class="action-btn">Clear Bass Line</button>
-                <p class="card-note">These presets include bass movement plus kick, snare, and hat-like transients.</p>
+                <p class="card-note">These presets include bass movement plus kick, snare, and hat-like transients. In score-sheet mode, this BPM also sets the note-grid quantization used by the Note tool.</p>
               </section>
 
               <section class="control-card">
@@ -324,7 +330,7 @@
 
               <section class="control-card shortcuts-card">
                 <h3>Shortcuts</h3>
-                <p><code>1..5</code> tool, <code>[</code>/<code>]</code> size, <code>-</code>/<code>=</code> strength</p>
+                <p><code>1..5</code> tool, <code>6</code> snapped note tool in score-sheet mode, <code>[</code>/<code>]</code> size, <code>-</code>/<code>=</code> strength</p>
                 <p><code>Space</code> play/pause, <code>S</code> stop, <code>C</code> clear, <code>G</code> grid</p>
                 <p><code>Ctrl+Z</code> / <code>Cmd+Z</code> undo the last mouse drag</p>
                 <p><code>Shift</code> while using line snaps to horizontal or vertical</p>

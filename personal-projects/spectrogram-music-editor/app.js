@@ -36,6 +36,10 @@
     const STFT_HOP = 128;
     const MIN_VIEW_COLS = 24;
     const MAX_UNDO_STEPS = 16;
+    const DEFAULT_GUITAR_PLUCK_POSITION = 0.19;
+    const DEFAULT_GUITAR_BODY_RESONANCE = 0.92;
+    const DEFAULT_PIANO_HAMMER_HARDNESS = 0.84;
+    const DEFAULT_PIANO_STRING_COUPLING = 0.9;
 
     const canvas = document.getElementById("spectrogram-canvas");
     if (!canvas) {
@@ -80,6 +84,10 @@
     const sizeInput = document.getElementById("size-input");
     const strengthInput = document.getElementById("strength-input");
     const densityInput = document.getElementById("density-input");
+    const guitarPluckInput = document.getElementById("guitar-pluck-input");
+    const guitarBodyInput = document.getElementById("guitar-body-input");
+    const pianoHammerInput = document.getElementById("piano-hammer-input");
+    const pianoCouplingInput = document.getElementById("piano-coupling-input");
     const editorViewSelect = document.getElementById("editor-view-select");
     const loopToggle = document.getElementById("loop-toggle");
     const gridToggle = document.getElementById("grid-toggle");
@@ -91,6 +99,10 @@
     const sizeOut = document.getElementById("size-out");
     const strengthOut = document.getElementById("strength-out");
     const densityOut = document.getElementById("density-out");
+    const guitarPluckOut = document.getElementById("guitar-pluck-out");
+    const guitarBodyOut = document.getElementById("guitar-body-out");
+    const pianoHammerOut = document.getElementById("piano-hammer-out");
+    const pianoCouplingOut = document.getElementById("piano-coupling-out");
     const basslineBpmOut = document.getElementById("bassline-bpm-out");
     const timelineOut = document.getElementById("timeline-out");
 
@@ -201,12 +213,94 @@
     return (Number(sizeInput.value) / plotWidth()) * visibleColCount();
   }
 
+  function noteToolDurationSeconds() {
+    const visibleSeconds = visibleTimeRange().end - visibleTimeRange().start;
+    return clamp(visibleSeconds * 0.06, 0.12, 0.6);
+  }
+
+  function scoreBeatSeconds() {
+    return 60 / Math.max(1, basslineBpm());
+  }
+
+  function scoreQuantizationStepBeats() {
+    return 0.25;
+  }
+
+  function scoreAllowedNoteLengthsBeats() {
+    return [0.25, 0.5, 1, 2, 4];
+  }
+
+  function quantizeToStep(value, step) {
+    return Math.round(value / step) * step;
+  }
+
+  function nearestAllowedScoreLengthBeats(rawBeats) {
+    const allowed = scoreAllowedNoteLengthsBeats();
+    let best = allowed[0];
+    let bestDistance = Math.abs(rawBeats - best);
+    for (let i = 1; i < allowed.length; i += 1) {
+      const candidate = allowed[i];
+      const distance = Math.abs(rawBeats - candidate);
+      if (distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
+  function quantizedScoreNotePlacement(startPoint, endPoint) {
+    const startSnap = snapPointToScoreMidi(startPoint);
+    const endSnap = snapPointToScoreMidi(endPoint);
+    if (!startSnap || !endSnap) {
+      return null;
+    }
+
+    const rawStartSec = timeFromCol(Math.min(startSnap.col, endSnap.col));
+    const rawEndSec = timeFromCol(Math.max(
+      startSnap.col,
+      endSnap.col,
+      Math.min(startSnap.col, endSnap.col) + noteToolDurationSeconds() * COLS_PER_SECOND
+    ));
+    const beatSeconds = scoreBeatSeconds();
+    const stepBeats = scoreQuantizationStepBeats();
+    const quantizedStartBeats = Math.max(0, quantizeToStep(rawStartSec / beatSeconds, stepBeats));
+    const rawDurationBeats = Math.max(stepBeats, (rawEndSec - rawStartSec) / beatSeconds);
+    const quantizedDurationBeats = nearestAllowedScoreLengthBeats(rawDurationBeats);
+    const startSec = clamp(quantizedStartBeats * beatSeconds, 0, Math.max(0, durationSeconds() - stepBeats * beatSeconds));
+    const endSec = clamp(startSec + quantizedDurationBeats * beatSeconds, startSec + stepBeats * beatSeconds, durationSeconds());
+    return {
+      midi: endSnap.midi,
+      startSec,
+      endSec,
+      startCol: colFromTime(startSec),
+      endCol: colFromTime(endSec),
+      durationBeats: quantizedDurationBeats
+    };
+  }
+
   function currentStrength() {
     return Number(strengthInput.value);
   }
 
   function currentDensity() {
     return Number(densityInput.value);
+  }
+
+  function guitarPluckPosition() {
+    return guitarPluckInput ? Number(guitarPluckInput.value) / 100 : DEFAULT_GUITAR_PLUCK_POSITION;
+  }
+
+  function guitarBodyResonance() {
+    return guitarBodyInput ? Number(guitarBodyInput.value) : DEFAULT_GUITAR_BODY_RESONANCE;
+  }
+
+  function pianoHammerHardness() {
+    return pianoHammerInput ? Number(pianoHammerInput.value) : DEFAULT_PIANO_HAMMER_HARDNESS;
+  }
+
+  function pianoStringCoupling() {
+    return pianoCouplingInput ? Number(pianoCouplingInput.value) : DEFAULT_PIANO_STRING_COUPLING;
   }
 
   function basslineBpm() {
@@ -234,6 +328,35 @@
 
   function isScoreSheetMode() {
     return Boolean(currentScoreProfile());
+  }
+
+  function isScoreNoteToolAvailable() {
+    return isScoreSheetMode();
+  }
+
+  function nearestScoreMidiForPoint(point) {
+    const profile = currentScoreProfile();
+    if (!profile || !point) {
+      return null;
+    }
+    const snappedMidi = clamp(
+      Math.round(freqToMidi(freqFromRow(point.row))),
+      profile.minMidi,
+      profile.maxMidi
+    );
+    return snappedMidi;
+  }
+
+  function snapPointToScoreMidi(point) {
+    const midi = nearestScoreMidiForPoint(point);
+    if (midi === null) {
+      return null;
+    }
+    return {
+      col: point.col,
+      row: rowFromFreq(midiToFreq(midi)),
+      midi
+    };
   }
 
   function effectiveMinFrequency() {
@@ -455,7 +578,7 @@
   }
 
   function defaultCanvasCursor() {
-    return state.tool === "line" ? "cell" : "crosshair";
+    return state.tool === "line" || state.tool === "note" ? "cell" : "crosshair";
   }
 
   function playheadColumn() {
@@ -533,6 +656,27 @@
       state.scoreEvents = mergeAdjacentNoteEvents(nextEvents);
     }
     return changed;
+  }
+
+  function addScoreNoteEvent(startPoint, endPoint) {
+    const placement = quantizedScoreNotePlacement(startPoint, endPoint);
+    if (!placement) {
+      return false;
+    }
+    if (placement.endSec <= placement.startSec + 0.01) {
+      return false;
+    }
+    const velocity = clamp(currentStrength() * 0.82 + 0.18, 0.18, 1);
+    state.scoreEvents = mergeAdjacentNoteEvents([
+      ...state.scoreEvents,
+      {
+        startSec: placement.startSec,
+        durationSec: placement.endSec - placement.startSec,
+        midi: placement.midi,
+        velocity
+      }
+    ]);
+    return true;
   }
 
   function cloneEventList(events) {
@@ -656,6 +800,18 @@
     sizeOut.textContent = `${Math.round(Number(sizeInput.value))} px`;
     strengthOut.textContent = currentStrength().toFixed(2);
     densityOut.textContent = `${Math.round(currentDensity())}`;
+    if (guitarPluckOut) {
+      guitarPluckOut.textContent = `${Math.round(guitarPluckPosition() * 100)}%`;
+    }
+    if (guitarBodyOut) {
+      guitarBodyOut.textContent = guitarBodyResonance().toFixed(2);
+    }
+    if (pianoHammerOut) {
+      pianoHammerOut.textContent = pianoHammerHardness().toFixed(2);
+    }
+    if (pianoCouplingOut) {
+      pianoCouplingOut.textContent = pianoStringCoupling().toFixed(2);
+    }
     basslineBpmOut.textContent = `${Math.round(basslineBpm())}`;
     if (renderModeSelect) {
       renderModeSelect.value = state.renderMode;
@@ -672,6 +828,17 @@
     }
     if (loopToggle) {
       loopToggle.checked = state.loopPlayback;
+    }
+    const noteToolButton = toolButtons.find((button) => button.dataset.tool === "note");
+    if (noteToolButton) {
+      noteToolButton.hidden = !isScoreNoteToolAvailable();
+      noteToolButton.disabled = !isScoreNoteToolAvailable();
+      if (!isScoreNoteToolAvailable() && state.tool === "note") {
+        state.tool = "brush";
+      }
+    }
+    for (const button of toolButtons) {
+      button.classList.toggle("is-active", button.dataset.tool === state.tool);
     }
     updateUndoButton();
     const range = visibleTimeRange();
@@ -990,7 +1157,32 @@
   }
 
   function drawLinePreview() {
-    if (!state.lineStart || !state.linePreview || state.tool !== "line") {
+    if (!state.lineStart || !state.linePreview || (state.tool !== "line" && state.tool !== "note")) {
+      return;
+    }
+    if (state.tool === "note") {
+      const placement = quantizedScoreNotePlacement(state.lineStart, state.linePreview);
+      if (!placement) {
+        return;
+      }
+      const startCol = placement.startCol;
+      const endCol = placement.endCol;
+      const midi = placement.midi;
+      const topFreq = midiToFreq(midi + 0.48);
+      const bottomFreq = midiToFreq(midi - 0.48);
+      const top = gridToCanvas(startCol, rowFromFreq(topFreq));
+      const bottom = gridToCanvas(endCol, rowFromFreq(bottomFreq));
+      const x = Math.min(top.x, bottom.x);
+      const y = Math.min(top.y, bottom.y);
+      const width = Math.max(2, Math.abs(bottom.x - top.x));
+      const height = Math.max(5, Math.abs(bottom.y - top.y));
+      ctx.save();
+      ctx.fillStyle = "rgba(121, 214, 255, 0.24)";
+      ctx.strokeStyle = "rgba(121, 214, 255, 0.95)";
+      ctx.lineWidth = 1.6;
+      ctx.fillRect(x, y, width, height);
+      ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, width - 1), Math.max(1, height - 1));
+      ctx.restore();
       return;
     }
     const from = gridToCanvas(state.lineStart.col, state.lineStart.row);
@@ -1404,7 +1596,7 @@
   }
 
   function holdLoop(now) {
-    if (!state.drawing || !state.currentPointer || state.tool === "line") {
+    if (!state.drawing || !state.currentPointer || state.tool === "line" || state.tool === "note") {
       stopHoldLoop();
       return;
     }
@@ -2432,6 +2624,25 @@
     const output = new Float32Array(totalSamples);
     const isGuitar = instrument === "guitar";
     const isPiano = instrument === "piano";
+    const pluckPosControl = clamp(guitarPluckPosition(), 0.08, 0.45);
+    const bodyResonanceControl = clamp(guitarBodyResonance(), 0, 1);
+    const hammerHardness = clamp(pianoHammerHardness(), 0, 1);
+    const stringCoupling = clamp(pianoStringCoupling(), 0, 1);
+    const partialCount = isGuitar ? 6 : 8;
+    const guitarBodyModes = [
+      { freq: 110, decay: 10.5, gain: 0.17 },
+      { freq: 205, decay: 12.4, gain: 0.12 },
+      { freq: 415, decay: 15.8, gain: 0.08 },
+      { freq: 640, decay: 19.6, gain: 0.05 }
+    ];
+    const pianoBodyModes = [
+      { freq: 92, decay: 8.8, gain: 0.12 },
+      { freq: 184, decay: 10.3, gain: 0.09 },
+      { freq: 368, decay: 12.8, gain: 0.07 },
+      { freq: 734, decay: 16.4, gain: 0.045 },
+      { freq: 1180, decay: 19.5, gain: 0.028 }
+    ];
+    const bodyModes = isGuitar ? guitarBodyModes : pianoBodyModes;
 
     for (const track of tracks) {
       const medianFreq = estimateTrackMedianFreq(track);
@@ -2439,26 +2650,29 @@
         ? (medianFreq < 280 ? 3 : medianFreq < 900 ? 2 : 1)
         : 1;
       const stringDetunes = isPiano
-        ? [-0.0022, 0, 0.0025]
+        ? [-5.5, 0, 4.4].slice(0, stringCount).map((cents) => Math.pow(2, (cents * (0.35 + stringCoupling * 0.95)) / 1200) - 1)
         : [0];
-      const phase1 = new Float64Array(stringCount);
-      const phase2 = new Float64Array(stringCount);
-      const phase3 = new Float64Array(stringCount);
-      const phase4 = new Float64Array(stringCount);
+      const partialPhases = Array.from({ length: stringCount }, () => new Float64Array(partialCount));
+      const bodyPhases = new Float64Array(bodyModes.length);
       let lastFreq = track.freqTrack[track.firstCol] > 0 ? track.freqTrack[track.firstCol] : medianFreq;
       let smoothedFreq = lastFreq;
       let onsetAgeSamples = Math.max(1, Math.floor(RENDER_SAMPLE_RATE * 0.02));
       let noiseMemory = 0;
+      const pluckPos = isGuitar
+        ? clamp(pluckPosControl + deterministicNoise(track.id * 5.17 + medianFreq * 0.0004) * 0.018, 0.08, 0.45)
+        : 0.18;
 
       function resetInstrumentPhases(col) {
         const onsetSeed = track.id * 29.7 + col * 0.83 + (isGuitar ? 11.9 : 23.4);
         for (let stringIndex = 0; stringIndex < stringCount; stringIndex += 1) {
-          const offset = deterministicPhase(onsetSeed + stringIndex * 0.37) * (isPiano ? 0.08 : 0.04);
+          const offset = deterministicPhase(onsetSeed + stringIndex * 0.37) * (isPiano ? 0.11 : 0.05);
           const basePhase = (track.initialPhase + offset) % TAU;
-          phase1[stringIndex] = basePhase;
-          phase2[stringIndex] = (basePhase * 2) % TAU;
-          phase3[stringIndex] = (basePhase * 3) % TAU;
-          phase4[stringIndex] = (basePhase * 4) % TAU;
+          for (let harmonic = 0; harmonic < partialCount; harmonic += 1) {
+            partialPhases[stringIndex][harmonic] = (basePhase * (harmonic + 1)) % TAU;
+          }
+        }
+        for (let modeIndex = 0; modeIndex < bodyModes.length; modeIndex += 1) {
+          bodyPhases[modeIndex] = deterministicPhase(onsetSeed * 0.41 + modeIndex * 2.17);
         }
         onsetAgeSamples = 0;
       }
@@ -2498,15 +2712,11 @@
 
           const amplitude = Math.pow(lerp(amp0, amp1, localT), 1.01) * (0.9 + 0.1 * coherence);
           const onsetAge = onsetAgeSamples / RENDER_SAMPLE_RATE;
-          const attackSeconds = isGuitar ? 0.003 : 0.005;
+          const attackSeconds = isGuitar ? 0.0024 : lerp(0.0065, 0.0018, hammerHardness);
           const attackEnv = onsetAge < attackSeconds ? onsetAge / Math.max(0.0005, attackSeconds) : 1;
           const highFreqFactor = clamp(smoothedFreq / 1200, 0, 1);
-          const bodyDecayRate = isGuitar
-            ? lerp(1.7, 3.8, highFreqFactor)
-            : lerp(0.85, 2.5, highFreqFactor);
-          const brightnessDecayRate = isGuitar
-            ? lerp(5.8, 9.2, highFreqFactor)
-            : lerp(4.6, 8.1, highFreqFactor);
+          const bodyDecayRate = isGuitar ? lerp(1.1, 2.4, highFreqFactor) : lerp(0.38, 1.1, highFreqFactor);
+          const brightnessDecayRate = isGuitar ? lerp(6.4, 10.6, highFreqFactor) : lerp(5.3, 8.9, highFreqFactor);
           const bodyDecay = Math.exp(-onsetAge * bodyDecayRate);
           const brightnessDecay = Math.exp(-onsetAge * brightnessDecayRate);
           const transientShape = 1 + transient * (isGuitar ? 0.16 : 0.22) * Math.exp(-onsetAge * 42);
@@ -2515,46 +2725,63 @@
           noiseMemory = isGuitar
             ? noiseMemory * 0.52 + noise * 0.48
             : noiseMemory * 0.68 + noise * 0.32;
-          const attackNoise = (noise - noiseMemory) * Math.exp(-onsetAge * (isGuitar ? 48 : 88));
-          let body = 0;
-          let bodyWeight = 0;
+          const attackNoise = (noise - noiseMemory) * Math.exp(-onsetAge * (isGuitar ? 52 : lerp(140, 72, hammerHardness)));
+          let stringBody = 0;
+          let stringWeight = 0;
 
           for (let stringIndex = 0; stringIndex < stringCount; stringIndex += 1) {
             const detune = stringDetunes[stringIndex] || 0;
             const stringFreq = smoothedFreq * (1 + detune);
             const stiffness = isGuitar
-              ? 0.0012 + (1 - coherence) * 0.0008
-              : 0.0016 + highFreqFactor * 0.001;
-            const ratio2 = 2 * (1 + stiffness * 0.7);
-            const ratio3 = 3 * (1 + stiffness * 1.7);
-            const ratio4 = 4 * (1 + stiffness * 3.1);
-            const baseIncrement = (TAU * stringFreq) / RENDER_SAMPLE_RATE;
-            phase1[stringIndex] += baseIncrement;
-            phase2[stringIndex] += baseIncrement * ratio2;
-            phase3[stringIndex] += baseIncrement * ratio3;
-            phase4[stringIndex] += baseIncrement * ratio4;
-
-            const stringBody = isGuitar
-              ? Math.sin(phase1[stringIndex]) * 0.82
-                + Math.sin(phase2[stringIndex]) * (0.16 + 0.14 * brightnessDecay)
-                + Math.sin(phase3[stringIndex]) * (0.05 + 0.08 * brightnessDecay)
-                + Math.sin(phase4[stringIndex]) * (0.02 + 0.035 * brightnessDecay)
-              : Math.sin(phase1[stringIndex]) * 0.74
-                + Math.sin(phase2[stringIndex]) * (0.16 + 0.18 * brightnessDecay)
-                + Math.sin(phase3[stringIndex]) * (0.08 + 0.1 * brightnessDecay)
-                + Math.sin(phase4[stringIndex]) * (0.03 + 0.055 * brightnessDecay);
-            body += stringBody;
-            bodyWeight += 1;
+              ? 0.00008 + 0.00018 * highFreqFactor + (1 - coherence) * 0.00008
+              : 0.00022 + 0.00042 * highFreqFactor;
+            let localStringBody = 0;
+            for (let harmonic = 1; harmonic <= partialCount; harmonic += 1) {
+              const harmonicIndex = harmonic - 1;
+              const inharmonicMultiple = harmonic * Math.sqrt(1 + stiffness * harmonic * harmonic);
+              partialPhases[stringIndex][harmonicIndex] += (TAU * stringFreq * inharmonicMultiple) / RENDER_SAMPLE_RATE;
+              const phase = partialPhases[stringIndex][harmonicIndex];
+              let partialWeight;
+              if (isGuitar) {
+                const pluckNotch = Math.pow(Math.abs(Math.sin(Math.PI * harmonic * pluckPos)), 1.7);
+                const spectralTilt = 1 / Math.pow(harmonic, 1.28);
+                const harmonicDecay = Math.exp(-onsetAge * (0.42 + harmonic * 0.72));
+                partialWeight = pluckNotch * spectralTilt * (0.28 + 0.72 * harmonicDecay);
+              } else {
+                const hammerPeak = lerp(2.2, 6.0, hammerHardness);
+                const hammerSlope = lerp(1.18, 0.72, hammerHardness);
+                const hammerColor = (1 / Math.pow(harmonic, hammerSlope)) * (1 + 0.38 * Math.exp(-Math.pow((harmonic - hammerPeak) / 1.8, 2)));
+                const partialDecay = Math.exp(-onsetAge * (0.08 + harmonic * 0.2));
+                partialWeight = hammerColor * (0.24 + 0.76 * partialDecay);
+              }
+              localStringBody += Math.sin(phase) * partialWeight;
+            }
+            stringBody += localStringBody;
+            stringWeight += 1;
           }
 
-          if (bodyWeight > 0) {
-            body /= bodyWeight;
+          if (stringWeight > 0) {
+            stringBody /= stringWeight;
+          }
+
+          let bodyResonance = 0;
+          for (let modeIndex = 0; modeIndex < bodyModes.length; modeIndex += 1) {
+            const mode = bodyModes[modeIndex];
+            bodyPhases[modeIndex] += (TAU * mode.freq) / RENDER_SAMPLE_RATE;
+            const bodyScale = isGuitar
+              ? lerp(0.22, 1.35, bodyResonanceControl)
+              : lerp(0.16, 1.05, stringCoupling);
+            bodyResonance += Math.sin(bodyPhases[modeIndex]) * mode.gain * bodyScale * Math.exp(-onsetAge * mode.decay);
           }
 
           const instrumentBody = isGuitar
-            ? body + attackNoise * (0.05 + 0.05 * transient)
-            : Math.tanh(body * 1.22) + attackNoise * (0.035 + 0.04 * transient);
-          const envelope = amplitude * attackEnv * (0.22 + 0.78 * bodyDecay) * (0.86 + 0.14 * (1 - noisiness));
+            ? Math.tanh(stringBody * 1.08) * (0.84 + 0.12 * brightnessDecay)
+              + bodyResonance * (0.6 + 0.16 * transient)
+              + attackNoise * (0.1 + 0.06 * transient)
+            : Math.tanh(stringBody * 1.42)
+              + bodyResonance * (0.34 + 0.12 * transient)
+              + attackNoise * (0.03 + 0.08 * transient + hammerHardness * 0.02);
+          const envelope = amplitude * attackEnv * (0.18 + 0.82 * bodyDecay) * (0.86 + 0.14 * (1 - noisiness));
           output[sample] += envelope * transientShape * instrumentBody;
           onsetAgeSamples += 1;
         }
@@ -2686,15 +2913,300 @@
     return output;
   }
 
-  function buildScoreEventAudioData(totalSamples) {
+  function addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+    let phase1 = deterministicPhase(note.midi * 0.37 + note.startSec * 1.9);
+    const duration = Math.max(0.02, note.durationSec);
+    const releaseSeconds = Math.min(0.14, duration * 0.2);
+    const attackSeconds = 0.004;
+
+    for (let i = 0; i < sampleLength; i += 1) {
+      const time = i / RENDER_SAMPLE_RATE;
+      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
+      phase1 += (TAU * freq) / RENDER_SAMPLE_RATE;
+
+      const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
+      const releaseStart = Math.max(0, duration - releaseSeconds);
+      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
+      const sustainEnv = (0.98 - noteT * 0.12) * Math.exp(-time * 0.52);
+      const env = attackEnv * releaseEnv * Math.max(0, sustainEnv) * (0.22 + velocity * 0.78);
+      const body = Math.sin(phase1);
+      output[startSample + i] += env * body;
+    }
+  }
+
+  function addIndependentScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+    let phase1 = deterministicPhase(note.midi * 1.11 + note.startSec * 2.7);
+    let phase2 = deterministicPhase(note.midi * 1.47 + note.startSec * 1.9);
+    let phase3 = deterministicPhase(note.midi * 1.93 + note.startSec * 1.3);
+    let phase4 = deterministicPhase(note.midi * 2.39 + note.startSec * 0.9);
+    const duration = Math.max(0.02, note.durationSec);
+    const releaseSeconds = Math.min(0.12, duration * 0.22);
+    const attackSeconds = 0.003;
+
+    for (let i = 0; i < sampleLength; i += 1) {
+      const time = i / RENDER_SAMPLE_RATE;
+      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
+      phase1 += (TAU * freq) / RENDER_SAMPLE_RATE;
+      phase2 += (TAU * freq * 1.997) / RENDER_SAMPLE_RATE;
+      phase3 += (TAU * freq * 2.99) / RENDER_SAMPLE_RATE;
+      phase4 += (TAU * freq * 4.03) / RENDER_SAMPLE_RATE;
+
+      const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
+      const releaseStart = Math.max(0, duration - releaseSeconds);
+      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
+      const env = attackEnv * releaseEnv * Math.exp(-time * 0.78) * (0.2 + velocity * 0.8) * (0.95 - noteT * 0.14);
+      const body = Math.sin(phase1) * 0.72 + Math.sin(phase2) * 0.18 + Math.sin(phase3) * 0.08 + Math.sin(phase4) * 0.04;
+      output[startSample + i] += env * body;
+    }
+  }
+
+  function addSpectralScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+    const harmonicCount = 8;
+    const phases = new Float64Array(harmonicCount);
+    const detunes = new Float64Array(harmonicCount);
+    const duration = Math.max(0.02, note.durationSec);
+    const releaseSeconds = Math.min(0.18, duration * 0.26);
+
+    for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
+      phases[harmonic] = deterministicPhase(note.midi * (harmonic + 1) * 0.61 + note.startSec * 7.3 + harmonic * 11.1);
+      detunes[harmonic] = 1 + deterministicNoise(note.midi * 3.1 + harmonic * 17.3) * 0.0025;
+    }
+
+    for (let i = 0; i < sampleLength; i += 1) {
+      const time = i / RENDER_SAMPLE_RATE;
+      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
+      const releaseStart = Math.max(0, duration - releaseSeconds);
+      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
+      const env = releaseEnv * Math.exp(-time * 0.48) * (0.24 + velocity * 0.76) * (0.98 - noteT * 0.08);
+      let body = 0;
+      for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
+        const n = harmonic + 1;
+        const drift = 1 + deterministicNoise((startSample + i) * 0.013 + harmonic * 29.7 + note.midi) * 0.0009;
+        phases[harmonic] += (TAU * freq * n * detunes[harmonic] * drift) / RENDER_SAMPLE_RATE;
+        body += Math.sin(phases[harmonic]) / Math.pow(n, 0.86);
+      }
+      output[startSample + i] += env * body * 0.78;
+    }
+  }
+
+  function addGriffinScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+    const harmonicCount = 10;
+    const phases = new Float64Array(harmonicCount);
+    const detunes = new Float64Array(harmonicCount);
+    let noiseMemory = 0;
+    const duration = Math.max(0.02, note.durationSec);
+    const releaseSeconds = Math.min(0.18, duration * 0.28);
+
+    for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
+      phases[harmonic] = deterministicPhase(note.midi * (harmonic + 1) * 0.83 + note.startSec * 9.1 + harmonic * 5.3);
+      detunes[harmonic] = 1 + deterministicNoise(note.midi * 7.9 + harmonic * 19.7) * (0.004 + harmonic * 0.0007);
+    }
+
+    for (let i = 0; i < sampleLength; i += 1) {
+      const time = i / RENDER_SAMPLE_RATE;
+      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
+      const releaseStart = Math.max(0, duration - releaseSeconds);
+      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
+      const smearEnv = Math.exp(-time * 0.34) * (0.28 + velocity * 0.72);
+      let body = 0;
+      for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
+        const n = harmonic + 1;
+        const phaseDrift = deterministicNoise((startSample + i) * 0.021 + harmonic * 37.1 + note.midi * 0.5) * 0.0018;
+        phases[harmonic] += (TAU * freq * n * detunes[harmonic]) / RENDER_SAMPLE_RATE + phaseDrift;
+        body += Math.sin(phases[harmonic]) / Math.pow(n, 0.74);
+      }
+      const rawNoise = deterministicNoise((startSample + i) * 0.91 + note.midi * 3.7);
+      noiseMemory = noiseMemory * 0.78 + rawNoise * 0.22;
+      const airy = (rawNoise - noiseMemory) * Math.exp(-time * 26) * 0.045;
+      output[startSample + i] += releaseEnv * smearEnv * (body * 0.64 + airy) * (0.98 - noteT * 0.06);
+    }
+  }
+
+  function addHybridScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+    const harmonicCount = 7;
+    const coherentPhases = new Float64Array(harmonicCount);
+    const smearedPhases = new Float64Array(harmonicCount);
+    const duration = Math.max(0.02, note.durationSec);
+    const releaseSeconds = Math.min(0.16, duration * 0.24);
+
+    for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
+      coherentPhases[harmonic] = deterministicPhase(note.midi * (harmonic + 1) * 0.43 + note.startSec * 2.7);
+      smearedPhases[harmonic] = deterministicPhase(note.midi * (harmonic + 1) * 1.37 + note.startSec * 8.9 + harmonic * 3.1);
+    }
+
+    for (let i = 0; i < sampleLength; i += 1) {
+      const time = i / RENDER_SAMPLE_RATE;
+      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
+      const releaseStart = Math.max(0, duration - releaseSeconds);
+      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
+      const env = releaseEnv * Math.exp(-time * 0.56) * (0.24 + velocity * 0.76);
+      let coherent = 0;
+      let smeared = 0;
+      for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
+        const n = harmonic + 1;
+        coherentPhases[harmonic] += (TAU * freq * n) / RENDER_SAMPLE_RATE;
+        smearedPhases[harmonic] += (TAU * freq * n * (1 + harmonic * 0.0018)) / RENDER_SAMPLE_RATE
+          + deterministicNoise((startSample + i) * 0.015 + harmonic * 17.9 + note.midi) * 0.001;
+        coherent += Math.sin(coherentPhases[harmonic]) / Math.pow(n, 0.98);
+        smeared += Math.sin(smearedPhases[harmonic]) / Math.pow(n, 0.78);
+      }
+      output[startSample + i] += env * (coherent * 0.52 + smeared * 0.36) * (0.98 - noteT * 0.08);
+    }
+  }
+
+  function addPianoScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+    const duration = Math.max(0.02, note.durationSec);
+    const hammerHardness = DEFAULT_PIANO_HAMMER_HARDNESS;
+    const stringCoupling = DEFAULT_PIANO_STRING_COUPLING;
+    const partialCount = 8;
+    const stringCount = freq < 280 ? 3 : freq < 900 ? 2 : 1;
+    const stringDetunes = [-5.5, 0, 4.4].slice(0, stringCount).map((cents) => Math.pow(2, (cents * (0.35 + stringCoupling * 0.95)) / 1200) - 1);
+    const partialPhases = Array.from({ length: stringCount }, () => new Float64Array(partialCount));
+    const bodyModes = [
+      { freq: 92, decay: 8.8, gain: 0.12 },
+      { freq: 184, decay: 10.3, gain: 0.09 },
+      { freq: 368, decay: 12.8, gain: 0.07 },
+      { freq: 734, decay: 16.4, gain: 0.045 },
+      { freq: 1180, decay: 19.5, gain: 0.028 }
+    ];
+    const bodyPhases = new Float64Array(bodyModes.length);
+    let noiseMemory = 0;
+    for (let stringIndex = 0; stringIndex < stringCount; stringIndex += 1) {
+      const offset = deterministicPhase(note.midi * 0.7 + note.startSec * 3.1 + stringIndex * 0.37) * 0.11;
+      const basePhase = deterministicPhase(note.midi * 0.37 + note.startSec * 1.9 + 23.4 + stringIndex) + offset;
+      for (let harmonic = 0; harmonic < partialCount; harmonic += 1) {
+        partialPhases[stringIndex][harmonic] = (basePhase * (harmonic + 1)) % TAU;
+      }
+    }
+    for (let modeIndex = 0; modeIndex < bodyModes.length; modeIndex += 1) {
+      bodyPhases[modeIndex] = deterministicPhase(note.midi * 0.19 + note.startSec * 0.41 + modeIndex * 2.17);
+    }
+
+    for (let i = 0; i < sampleLength; i += 1) {
+      const time = i / RENDER_SAMPLE_RATE;
+      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
+      const highFreqFactor = clamp(freq / 1200, 0, 1);
+      const attackSeconds = lerp(0.0065, 0.0018, hammerHardness);
+      const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
+      const releaseSeconds = Math.min(0.2, duration * 0.22);
+      const releaseStart = Math.max(0, duration - releaseSeconds);
+      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
+      const bodyDecayRate = lerp(0.38, 1.1, highFreqFactor);
+      const brightnessDecayRate = lerp(5.3, 8.9, highFreqFactor);
+      const bodyDecay = Math.exp(-time * bodyDecayRate);
+      const brightnessDecay = Math.exp(-time * brightnessDecayRate);
+
+      const rawNoise = deterministicNoise((startSample + i) * 1.73 + note.midi * 0.61);
+      noiseMemory = noiseMemory * 0.68 + rawNoise * 0.32;
+      const attackNoise = (rawNoise - noiseMemory) * Math.exp(-time * lerp(140, 72, hammerHardness));
+
+      let stringBody = 0;
+      for (let stringIndex = 0; stringIndex < stringCount; stringIndex += 1) {
+        const detune = stringDetunes[stringIndex] || 0;
+        const stringFreq = freq * (1 + detune);
+        const stiffness = 0.00022 + 0.00042 * highFreqFactor;
+        let localStringBody = 0;
+        for (let harmonic = 1; harmonic <= partialCount; harmonic += 1) {
+          const harmonicIndex = harmonic - 1;
+          const inharmonicMultiple = harmonic * Math.sqrt(1 + stiffness * harmonic * harmonic);
+          partialPhases[stringIndex][harmonicIndex] += (TAU * stringFreq * inharmonicMultiple) / RENDER_SAMPLE_RATE;
+          const phase = partialPhases[stringIndex][harmonicIndex];
+          const hammerPeak = lerp(2.2, 6.0, hammerHardness);
+          const hammerSlope = lerp(1.18, 0.72, hammerHardness);
+          const hammerColor = (1 / Math.pow(harmonic, hammerSlope)) * (1 + 0.38 * Math.exp(-Math.pow((harmonic - hammerPeak) / 1.8, 2)));
+          const partialDecay = Math.exp(-time * (0.08 + harmonic * 0.2));
+          localStringBody += Math.sin(phase) * hammerColor * (0.24 + 0.76 * partialDecay);
+        }
+        stringBody += localStringBody / stringCount;
+      }
+
+      let bodyResonance = 0;
+      for (let modeIndex = 0; modeIndex < bodyModes.length; modeIndex += 1) {
+        const mode = bodyModes[modeIndex];
+        bodyPhases[modeIndex] += (TAU * mode.freq) / RENDER_SAMPLE_RATE;
+        bodyResonance += Math.sin(bodyPhases[modeIndex]) * mode.gain * lerp(0.16, 1.05, stringCoupling) * Math.exp(-time * mode.decay);
+      }
+
+      const instrumentBody = Math.tanh(stringBody * 1.42) + bodyResonance * 0.42 + attackNoise * (0.03 + hammerHardness * 0.1);
+      const env = attackEnv * releaseEnv * (0.18 + 0.82 * bodyDecay) * (0.22 + velocity * 0.78) * (0.9 + 0.1 * brightnessDecay);
+      output[startSample + i] += env * instrumentBody;
+    }
+  }
+
+  function addGuitarScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+    const duration = Math.max(0.02, note.durationSec);
+    const partialCount = 6;
+    const partialPhases = new Float64Array(partialCount);
+    const bodyModes = [
+      { freq: 110, decay: 10.5, gain: 0.17 },
+      { freq: 205, decay: 12.4, gain: 0.12 },
+      { freq: 415, decay: 15.8, gain: 0.08 },
+      { freq: 640, decay: 19.6, gain: 0.05 }
+    ];
+    const bodyPhases = new Float64Array(bodyModes.length);
+    const highFreqFactor = clamp(freq / 1200, 0, 1);
+    const pluckPos = clamp(
+      DEFAULT_GUITAR_PLUCK_POSITION + deterministicNoise(note.midi * 5.17 + freq * 0.0004) * 0.018,
+      0.08,
+      0.45
+    );
+    let noiseMemory = 0;
+    const basePhase = deterministicPhase(note.midi * 0.37 + note.startSec * 1.9 + 11.9);
+    for (let harmonic = 0; harmonic < partialCount; harmonic += 1) {
+      partialPhases[harmonic] = (basePhase * (harmonic + 1)) % TAU;
+    }
+    for (let modeIndex = 0; modeIndex < bodyModes.length; modeIndex += 1) {
+      bodyPhases[modeIndex] = deterministicPhase(note.midi * 0.43 + note.startSec * 0.41 + modeIndex * 2.17);
+    }
+
+    for (let i = 0; i < sampleLength; i += 1) {
+      const time = i / RENDER_SAMPLE_RATE;
+      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
+      const attackSeconds = 0.0024;
+      const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
+      const releaseSeconds = Math.min(0.12, duration * 0.24);
+      const releaseStart = Math.max(0, duration - releaseSeconds);
+      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
+      const bodyDecayRate = lerp(1.1, 2.4, highFreqFactor);
+      const brightnessDecayRate = lerp(6.4, 10.6, highFreqFactor);
+      const bodyDecay = Math.exp(-time * bodyDecayRate);
+      const brightnessDecay = Math.exp(-time * brightnessDecayRate);
+      const rawNoise = deterministicNoise((startSample + i) * 2.31 + note.midi * 0.49);
+      noiseMemory = noiseMemory * 0.52 + rawNoise * 0.48;
+      const attackNoise = (rawNoise - noiseMemory) * Math.exp(-time * 52);
+
+      const stiffness = 0.00008 + 0.00018 * highFreqFactor;
+      let stringBody = 0;
+      for (let harmonic = 1; harmonic <= partialCount; harmonic += 1) {
+        const harmonicIndex = harmonic - 1;
+        const inharmonicMultiple = harmonic * Math.sqrt(1 + stiffness * harmonic * harmonic);
+        partialPhases[harmonicIndex] += (TAU * freq * inharmonicMultiple) / RENDER_SAMPLE_RATE;
+        const phase = partialPhases[harmonicIndex];
+        const pluckNotch = Math.pow(Math.abs(Math.sin(Math.PI * harmonic * pluckPos)), 1.7);
+        const spectralTilt = 1 / Math.pow(harmonic, 1.28);
+        const harmonicDecay = Math.exp(-time * (0.42 + harmonic * 0.72));
+        const partialWeight = pluckNotch * spectralTilt * (0.28 + 0.72 * harmonicDecay);
+        stringBody += Math.sin(phase) * partialWeight;
+      }
+
+      let bodyResonance = 0;
+      for (let modeIndex = 0; modeIndex < bodyModes.length; modeIndex += 1) {
+        const mode = bodyModes[modeIndex];
+        bodyPhases[modeIndex] += (TAU * mode.freq) / RENDER_SAMPLE_RATE;
+        bodyResonance += Math.sin(bodyPhases[modeIndex]) * mode.gain * lerp(0.22, 1.35, DEFAULT_GUITAR_BODY_RESONANCE) * Math.exp(-time * mode.decay);
+      }
+
+      const instrumentBody = Math.tanh(stringBody * 1.08) * (0.84 + 0.12 * brightnessDecay) + bodyResonance * 0.68 + attackNoise * 0.16;
+      const env = attackEnv * releaseEnv * (0.18 + 0.82 * bodyDecay) * (0.22 + velocity * 0.78) * (0.98 - noteT * 0.12);
+      output[startSample + i] += env * instrumentBody;
+    }
+  }
+
+  function buildScoreEventAudioData(totalSamples, renderMode = state.renderMode) {
     const output = new Float32Array(totalSamples);
     if (!state.scoreEvents.length) {
       return output;
     }
-
-    const profile = currentScoreProfile();
-    const isGuitar = profile && state.editorView === "guitar-score";
-    const isPiano = profile && state.editorView === "piano-score";
 
     function sampleIndexAt(seconds) {
       return clamp(Math.floor(seconds * RENDER_SAMPLE_RATE), 0, Math.max(0, totalSamples - 1));
@@ -2707,45 +3219,32 @@
       if (sampleLength <= 0) {
         continue;
       }
-
-      let phase1 = deterministicPhase(note.midi * 0.37 + note.startSec * 1.9);
-      let phase2 = (phase1 * 2) % TAU;
-      let phase3 = (phase1 * 3) % TAU;
-      let noiseMemory = 0;
       const velocity = clamp(note.velocity || 0.78, 0.18, 1);
       const freq = midiToFreq(note.midi);
-      const releaseSeconds = isGuitar ? Math.min(0.09, duration * 0.24) : Math.min(0.16, duration * 0.22);
-      const attackSeconds = isGuitar ? 0.003 : 0.004;
 
-      for (let i = 0; i < sampleLength; i += 1) {
-        const time = i / RENDER_SAMPLE_RATE;
-        const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
-        phase1 += (TAU * freq) / RENDER_SAMPLE_RATE;
-        phase2 += (TAU * freq * 2) / RENDER_SAMPLE_RATE;
-        phase3 += (TAU * freq * 3) / RENDER_SAMPLE_RATE;
-
-        const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
-        const releaseStart = Math.max(0, duration - releaseSeconds);
-        const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
-        const sustainEnv = isGuitar
-          ? Math.exp(-time * 2.8) * (0.88 - noteT * 0.12)
-          : (0.96 - noteT * 0.18) * Math.exp(-time * 0.8);
-        const env = attackEnv * releaseEnv * Math.max(0, sustainEnv) * (0.22 + velocity * 0.78);
-
-        let body;
-        if (isGuitar) {
-          const pluckNoise = deterministicNoise((startSample + i) * 2.31 + note.midi * 1.7);
-          noiseMemory = noiseMemory * 0.52 + pluckNoise * 0.48;
-          const pluck = (pluckNoise - noiseMemory) * Math.exp(-time * 42) * 0.07;
-          body = Math.sin(phase1) * 0.82 + Math.sin(phase2) * 0.17 + Math.sin(phase3) * 0.08 + pluck;
-        } else if (isPiano) {
-          body = Math.sin(phase1) * 0.76 + Math.sin(phase2) * 0.24 + Math.sin(phase3) * 0.12;
-          body = Math.tanh(body * 1.32);
-        } else {
-          body = Math.sin(phase1) * 0.88 + Math.sin(phase2) * 0.12 + Math.sin(phase3) * 0.04;
-        }
-
-        output[startSample + i] += env * body;
+      switch (renderMode) {
+        case "independent":
+          addIndependentScoreNote(output, startSample, sampleLength, note, velocity, freq);
+          break;
+        case "spectral":
+          addSpectralScoreNote(output, startSample, sampleLength, note, velocity, freq);
+          break;
+        case "griffin":
+          addGriffinScoreNote(output, startSample, sampleLength, note, velocity, freq);
+          break;
+        case "hybrid":
+          addHybridScoreNote(output, startSample, sampleLength, note, velocity, freq);
+          break;
+        case "piano":
+          addPianoScoreNote(output, startSample, sampleLength, note, velocity, freq);
+          break;
+        case "guitar":
+          addGuitarScoreNote(output, startSample, sampleLength, note, velocity, freq);
+          break;
+        case "geometry":
+        default:
+          addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq);
+          break;
       }
     }
 
@@ -3184,7 +3683,7 @@
     const totalSamples = Math.max(1, Math.floor(durationSeconds() * RENDER_SAMPLE_RATE));
     state.playDurationSeconds = durationSeconds();
     const bass = buildBassEventAudioData(totalSamples);
-    const score = buildScoreEventAudioData(totalSamples);
+    const score = buildScoreEventAudioData(totalSamples, state.renderMode);
     const output = new Float32Array(totalSamples);
     let tracks = extractDrawVoiceTracks(analysis);
     let iterations = 0;
@@ -3228,9 +3727,7 @@
       samples: output,
       iterations,
       modeLabel: scoreModeLabel
-        ? hasDrawTracks
-          ? `${renderModeName(state.renderMode)} + ${scoreModeLabel}`
-          : scoreModeLabel
+        ? `${renderModeName(state.renderMode)} + ${scoreModeLabel}`
         : renderModeName(state.renderMode),
       tracks,
       analysis
@@ -3388,6 +3885,9 @@
   }
 
   function setTool(tool) {
+    if (tool === "note" && !isScoreNoteToolAvailable()) {
+      tool = "brush";
+    }
     state.tool = tool;
     for (const button of toolButtons) {
       button.classList.toggle("is-active", button.dataset.tool === tool);
@@ -4073,6 +4573,10 @@
     if (!point) {
       return;
     }
+    const scorePoint = state.tool === "note" ? snapPointToScoreMidi(point) : point;
+    if (state.tool === "note" && !scorePoint) {
+      return;
+    }
 
     if (isNearPlayhead(point)) {
       state.pointerId = event.pointerId;
@@ -4096,20 +4600,20 @@
 
     state.pointerId = event.pointerId;
     state.drawing = true;
-    state.lastPointer = point;
-    state.currentPointer = point;
+    state.lastPointer = scorePoint;
+    state.currentPointer = scorePoint;
     state.pointerInside = true;
-    updateCursorReadout(point);
+    updateCursorReadout(scorePoint);
     canvas.setPointerCapture(event.pointerId);
 
-    if (state.tool === "line") {
-      state.lineStart = point;
-      state.linePreview = point;
+    if (state.tool === "line" || state.tool === "note") {
+      state.lineStart = scorePoint;
+      state.linePreview = scorePoint;
       renderCanvas();
       return;
     }
 
-    applyTool(point, 16);
+    applyTool(scorePoint, 16);
     markDirty();
     renderCanvas();
     startHoldLoop();
@@ -4117,10 +4621,11 @@
 
   function handlePointerMove(event) {
     const point = canvasToGrid(event.clientX, event.clientY);
-    state.pointerInside = Boolean(point);
-    state.currentPointer = point;
-    updateCursorReadout(point);
-    updateCanvasCursor(point);
+    const scorePoint = point && state.tool === "note" ? snapPointToScoreMidi(point) : point;
+    state.pointerInside = Boolean(scorePoint || point);
+    state.currentPointer = scorePoint || point;
+    updateCursorReadout(scorePoint || point);
+    updateCanvasCursor(scorePoint || point);
 
     if (!point) {
       renderCanvas();
@@ -4141,11 +4646,13 @@
         } else {
           state.linePreview = point;
         }
+      } else if (state.tool === "note") {
+        state.linePreview = scorePoint;
       } else if (state.lastPointer) {
         paintSegment(state.lastPointer, point, 20);
         markDirty();
       }
-      state.lastPointer = point;
+      state.lastPointer = scorePoint || point;
     }
 
     renderCanvas();
@@ -4167,6 +4674,10 @@
     if (state.tool === "line" && state.lineStart && state.linePreview) {
       stampLine(state.lineStart, state.linePreview, 1);
       markDirty();
+    } else if (state.tool === "note" && state.lineStart && state.linePreview) {
+      if (addScoreNoteEvent(state.lineStart, state.linePreview)) {
+        markDirty();
+      }
     }
 
     state.drawing = false;
@@ -4305,7 +4816,18 @@
   }
 
   function bindControls() {
-    const redrawInputs = [durationInput, minFreqInput, maxFreqInput, sizeInput, strengthInput, densityInput];
+    const redrawInputs = [
+      durationInput,
+      minFreqInput,
+      maxFreqInput,
+      sizeInput,
+      strengthInput,
+      densityInput,
+      guitarPluckInput,
+      guitarBodyInput,
+      pianoHammerInput,
+      pianoCouplingInput
+    ].filter(Boolean);
     for (const input of redrawInputs) {
       input.addEventListener("input", () => {
         if (input === minFreqInput || input === maxFreqInput) {
@@ -4475,9 +4997,9 @@
         return;
       }
 
-      if (event.key >= "1" && event.key <= "5") {
+      if (event.key >= "1" && event.key <= "6") {
         const index = Number(event.key) - 1;
-        const target = ["brush", "spray", "gaussian", "line", "erase"][index];
+        const target = ["brush", "spray", "gaussian", "line", "erase", "note"][index];
         setTool(target);
         renderCanvas();
         return;
