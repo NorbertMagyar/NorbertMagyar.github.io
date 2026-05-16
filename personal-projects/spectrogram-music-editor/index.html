@@ -65,6 +65,18 @@
   <link rel="stylesheet" href="./app.css" />
   <script defer src="../../analytics.js"></script>
   <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["\\(", "\\)"]],
+        displayMath: [["\\[", "\\]"]]
+      },
+      options: {
+        skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"]
+      }
+    };
+  </script>
+  <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <script>
     if ((location.protocol === "http:" || location.protocol === "https:") && location.pathname.endsWith("/index.html")) {
       location.replace(location.pathname.replace(/index\.html$/, "") + location.search + location.hash);
     }
@@ -107,6 +119,95 @@
             The app supports several paint-like tools, keyboard shortcuts, and in-browser playback. Everything
             runs locally in JavaScript through the Web Audio API, so nothing needs to be installed.
           </p>
+
+          <section class="synth-explainer" aria-labelledby="how-it-works-heading">
+            <h2 id="how-it-works-heading">How the synthesizer works</h2>
+            <p>
+              The editor stores a painted intensity field on a time-frequency grid. You can think of it as a hand-drawn
+              magnitude map \(A(t, f)\), where horizontal position is time \(t\), vertical position is
+              frequency \(f\), and brightness is amplitude. If you draw a narrow ridge that moves upward in
+              frequency, the synth interprets that geometry as a gliding tone. If you paint several ridges at once, it can
+              become a chord or a polyphonic texture. If you spray or blur energy over a wide band, it behaves more like
+              noise or a diffuse cloud.
+            </p>
+            <p>
+              The central DSP difficulty is that the picture does not directly contain full waveform information. A sound
+              waveform is a pressure signal \(x(t)\), but the painted canvas mostly describes magnitudes in the
+              time-frequency plane. In simplified form, a sinusoidal reconstruction looks like
+            </p>
+            <p>
+              \[
+              x(t)=\sum_k a_k(t)\sin\bigl(\phi_k(t)\bigr),
+              \]
+            </p>
+            <p>
+              where \(a_k(t)\) is the amplitude of a partial and \(\phi_k(t)\) is its phase.
+              The amplitudes are suggested by the drawing, but the phases are not painted explicitly. That missing phase
+              information is why spectrogram inversion is interesting: many different waveforms can share a similar-looking
+              magnitude image.
+            </p>
+            <p>
+              This app therefore exposes several render philosophies rather than pretending there is one unique inverse. Some
+              modes treat drawn structures as physical sound objects: continuous ridges become oscillators with continuous
+              phase, sharp vertical marks behave like transients, and fuzzy paint becomes a more decorrelated residual layer.
+              Other modes ignore geometry and reconstruct the image more literally, for example by treating each frequency bin
+              independently or by iteratively solving a phase-retrieval problem in an STFT representation.
+            </p>
+            <p>
+              In the frequency domain, the classic short-time Fourier transform writes local spectra as
+              \(X(m, k)\) for frame \(m\) and bin \(k\). The painted canvas mainly specifies
+              something analogous to the magnitude \(\lvert X(m, k)\rvert\), while the missing phase still has to be inferred.
+            </p>
+            <p>
+              \[
+              X(m,k)=\lvert X(m,k)\rvert e^{i\,\arg X(m,k)}.
+              \]
+            </p>
+            <p>
+              Griffin-Lim then searches for phases \(\arg X(m, k)\) that are consistent with a real time-domain signal. By contrast, the geometry-based
+              renderer does not solve the inverse problem blindly: it infers likely physical phase behavior from the shapes
+              you paint.
+            </p>
+
+            <h2>Render modes</h2>
+            <p>
+              <strong>Geometry coherence.</strong> This is the most object-oriented renderer. It tracks continuous painted
+              ridges, estimates whether they are coherent or noisy, applies deterministic phase continuity along stable
+              tracks, resets phase around transient-like onsets, and adds a residual layer for broad or fuzzy energy. This
+              usually sounds the most physically organized for lines, glides, harmonic stacks, and articulated gestures.
+            </p>
+            <p>
+              <strong>Independent oscillators.</strong> This mode still detects ridges, but then treats them as unrelated
+              oscillators. Each track gets its own deterministic initial phase and evolves independently, without harmonic
+              grouping, transient-driven phase resets, or diffusion logic. The result is often cleaner than raw spectrogram
+              resynthesis, but less lifelike and less coupled than geometry coherence.
+            </p>
+            <p>
+              <strong>Spectral bins.</strong> This is close to classic additive spectrogram synthesis. Each frequency row
+              acts like its own oscillator with its own phase history, and the picture is followed more literally as a bin
+              amplitude image. This can preserve the look of the drawing quite faithfully, but it often sounds buzzy,
+              smeared, or metallic because neighboring bins are not explicitly coordinated into physical objects.
+            </p>
+            <p>
+              <strong>Griffin-Lim.</strong> This mode converts the drawing into a target magnitude spectrogram and then runs
+              iterative STFT phase reconstruction. The algorithm alternates between inverse STFT, forward STFT, and
+              magnitude replacement until the phases become more self-consistent. It is mathematically closer to "invert the
+              painted spectrogram" than the oscillator-based modes, but it can still sound phasey or metallic, especially on
+              sharp transients or sparse tonal structures.
+            </p>
+            <p>
+              <strong>Hybrid coherence + Griffin-Lim.</strong> This starts from the geometry-coherence renderer, computes an
+              STFT of that audio, and uses its phases as initialization for a shorter Griffin-Lim refinement. Conceptually,
+              it asks whether geometry-derived phase can provide a better starting guess than a generic deterministic phase
+              field. In practice it often sits between the two worlds: more image-faithful than pure geometry synthesis, but
+              more stable and physically organized than Griffin-Lim from scratch.
+            </p>
+            <p>
+              The diagnostics overlay is there for the same reason: this page is meant to be a synthesis instrument and a DSP
+              playground at the same time. Coherent tracks, noisy regions, harmonic groupings, and phase-reset locations are
+              all visual clues about how the renderer is interpreting your drawing rather than merely replaying pixels.
+            </p>
+          </section>
 
           <section class="spectro-hero" aria-label="Spectrogram editor overview">
             <div>
@@ -201,7 +302,7 @@
                 </label>
                 <label class="control-stack">
                   <span>Bass-line BPM: <output id="bassline-bpm-out">132</output></span>
-                  <input id="bassline-bpm-input" type="range" min="80" max="500" step="1" value="220" />
+                  <input id="bassline-bpm-input" type="range" min="80" max="300" step="1" value="132" />
                 </label>
                 <button id="clear-bassline-btn" type="button" class="action-btn">Clear Bass Line</button>
                 <p class="card-note">These presets include bass movement plus kick, snare, and hat-like transients.</p>
@@ -209,9 +310,15 @@
 
               <section class="control-card">
                 <h3>Synthesis</h3>
-                <label class="control-stack">
-                  <span>Render mode</span>
-                  <span>Pure glide sine</span>
+                <label class="control-stack" for="render-mode-select">
+                  <span id="render-mode-label">Render mode</span>
+                  <select id="render-mode-select">
+                    <option value="geometry">Geometry coherence</option>
+                    <option value="independent">Independent oscillators</option>
+                    <option value="spectral">Spectral bins</option>
+                    <option value="griffin">Griffin-Lim</option>
+                    <option value="hybrid">Hybrid coherence + Griffin-Lim</option>
+                  </select>
                 </label>
                 <label class="control-stack">
                   <span>Duration: <output id="duration-out">6.0 s</output></span>
@@ -230,10 +337,18 @@
                   <input id="gain-input" type="range" min="0.1" max="1" step="0.01" value="0.65" />
                 </label>
                 <label class="check-row">
+                  <input id="loop-toggle" type="checkbox" />
+                  <span>Loop playback</span>
+                </label>
+                <label class="check-row">
                   <input id="grid-toggle" type="checkbox" checked />
                   <span>Show grid</span>
                 </label>
-                <p class="card-note">Use pure glide for a single clean rising or falling sinusoid. Polyphonic drawings automatically lean back toward the spectral renderer.</p>
+                <label class="check-row">
+                  <input id="phase-diagnostics-toggle" type="checkbox" />
+                  <span>Phase diagnostics</span>
+                </label>
+                <p id="render-mode-description" class="card-note">Tracks continuous painted structures as coherent oscillators with inferred physical phase behavior.</p>
               </section>
 
               <section class="control-card">

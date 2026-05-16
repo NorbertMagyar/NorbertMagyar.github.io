@@ -20,6 +20,10 @@
     linear-gradient(135deg, rgba(17, 23, 39, 0.96), rgba(11, 16, 32, 0.94));
 }
 
+.synth-explainer {
+  margin: 1rem 0 2.1rem;
+}
+
 .hero-kicker {
   margin: 0 0 0.2rem;
   color: #ffcf8b;
@@ -61,7 +65,7 @@
   display: grid;
   grid-template-columns: minmax(0, 2.25fr) minmax(320px, 0.78fr);
   gap: 1rem;
-  margin-top: 1rem;
+  margin-top: 0.4rem;
 }
 
 .editor-surface,

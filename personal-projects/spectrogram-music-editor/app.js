@@ -30,8 +30,10 @@
     const TAU = Math.PI * 2;
     const RENDER_SAMPLE_RATE = 24000;
     const EPSILON = 0.0008;
-    const RENDER_MODE = "glide";
-    const RENDER_MODE_LABEL = "Pure glide sine";
+    const GRIFFIN_LIM_ITERATIONS = 16;
+    const HYBRID_GRIFFIN_LIM_ITERATIONS = 8;
+    const STFT_SIZE = 512;
+    const STFT_HOP = 128;
 
     const canvas = document.getElementById("spectrogram-canvas");
     if (!canvas) {
@@ -57,6 +59,10 @@
     const clearBasslineButton = document.getElementById("clear-bassline-btn");
     const basslineSelect = document.getElementById("bassline-select");
     const basslineBpmInput = document.getElementById("bassline-bpm-input");
+    const renderModeSelect = document.getElementById("render-mode-select");
+    const renderModeLabel = document.getElementById("render-mode-label");
+    const renderModeDescriptionEl = document.getElementById("render-mode-description");
+    const phaseDiagnosticsToggle = document.getElementById("phase-diagnostics-toggle");
     const timelineTrack = document.getElementById("timeline-track");
     const timelineThumb = document.getElementById("timeline-thumb");
     const timelineInput = document.getElementById("timeline-input");
@@ -69,6 +75,7 @@
     const sizeInput = document.getElementById("size-input");
     const strengthInput = document.getElementById("strength-input");
     const densityInput = document.getElementById("density-input");
+    const loopToggle = document.getElementById("loop-toggle");
     const gridToggle = document.getElementById("grid-toggle");
 
     const durationOut = document.getElementById("duration-out");
@@ -126,7 +133,14 @@
       playStartedAt: 0,
       playDurationSeconds: durationSeconds(),
       bassEvents,
-      currentBasslinePreset: "none"
+      currentBasslinePreset: "none",
+      renderMode: "geometry",
+      showPhaseDiagnostics: false,
+      loopPlayback: false,
+      dataVersion: 0,
+      diagnosticsCache: null,
+      latestRenderInfo: null,
+      lastPlaybackLoopIndex: 0
     };
 
   function plotWidth() {
@@ -183,6 +197,38 @@
 
   function isReloadableBasslinePreset(name) {
     return name !== "none" && name !== "custom";
+  }
+
+  function renderModeName(mode) {
+    if (mode === "independent") {
+      return "Independent oscillators";
+    }
+    if (mode === "spectral") {
+      return "Spectral bins";
+    }
+    if (mode === "griffin") {
+      return "Griffin-Lim";
+    }
+    if (mode === "hybrid") {
+      return "Hybrid coherence + Griffin-Lim";
+    }
+    return "Geometry coherence";
+  }
+
+  function renderModeDescription(mode) {
+    if (mode === "independent") {
+      return "Treats painted ridges as unrelated oscillators with no phase coupling.";
+    }
+    if (mode === "spectral") {
+      return "Classic spectrogram additive synthesis with one oscillator per frequency bin.";
+    }
+    if (mode === "griffin") {
+      return "Iterative STFT phase reconstruction from magnitude spectrogram only.";
+    }
+    if (mode === "hybrid") {
+      return "Geometry-coherent synthesis refined using Griffin-Lim consistency iterations.";
+    }
+    return "Tracks continuous painted structures as coherent oscillators with inferred physical phase behavior.";
   }
 
   function clamp(value, min, max) {
@@ -292,6 +338,8 @@
     state.dirty = true;
     state.renderedBuffer = null;
     state.renderedWav = null;
+    state.dataVersion += 1;
+    state.diagnosticsCache = null;
   }
 
   function createAudioContext() {
@@ -314,6 +362,22 @@
     strengthOut.textContent = currentStrength().toFixed(2);
     densityOut.textContent = `${Math.round(currentDensity())}`;
     basslineBpmOut.textContent = `${Math.round(basslineBpm())}`;
+    if (renderModeSelect) {
+      renderModeSelect.value = state.renderMode;
+      renderModeSelect.title = renderModeDescription(state.renderMode);
+    }
+    if (renderModeLabel) {
+      renderModeLabel.textContent = `Render mode: ${renderModeName(state.renderMode)}`;
+    }
+    if (renderModeDescriptionEl) {
+      renderModeDescriptionEl.textContent = renderModeDescription(state.renderMode);
+    }
+    if (phaseDiagnosticsToggle) {
+      phaseDiagnosticsToggle.checked = state.showPhaseDiagnostics;
+    }
+    if (loopToggle) {
+      loopToggle.checked = state.loopPlayback;
+    }
     const range = visibleTimeRange();
     timelineOut.textContent = `${range.start.toFixed(2)} s - ${range.end.toFixed(2)} s`;
     if (timelineTrack && timelineThumb) {
@@ -580,7 +644,100 @@
     ctx.restore();
   }
 
+  function getDiagnosticsSnapshot() {
+    if (!state.showPhaseDiagnostics) {
+      return null;
+    }
+    if (state.diagnosticsCache && state.diagnosticsCache.version === state.dataVersion) {
+      return state.diagnosticsCache.snapshot;
+    }
+    const analysis = analyzeColumns();
+    const tracks = extractDrawVoiceTracks(analysis);
+    const snapshot = { analysis, tracks };
+    state.diagnosticsCache = {
+      version: state.dataVersion,
+      snapshot
+    };
+    return snapshot;
+  }
+
+  function groupHue(groupId) {
+    if (groupId < 0) {
+      return 135;
+    }
+    return (groupId * 67 + 135) % 360;
+  }
+
+  function drawPhaseDiagnosticsOverlay(snapshot) {
+    if (!snapshot || !snapshot.tracks.length) {
+      return;
+    }
+
+    const x0 = margins.left;
+    const y0 = margins.top;
+    const w = plotWidth();
+    const h = plotHeight();
+
+    ctx.save();
+    ctx.rect(x0, y0, w, h);
+    ctx.clip();
+
+    for (const track of snapshot.tracks) {
+      const hue = groupHue(track.harmonicGroupId);
+      let segmentOpen = false;
+      ctx.lineWidth = 3;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      for (let col = Math.max(track.firstCol, visibleStartCol()); col <= Math.min(track.lastCol, visibleEndCol()); col += 1) {
+        if (track.activeTrack[col] < 0.1 || track.freqTrack[col] <= 0) {
+          segmentOpen = false;
+          continue;
+        }
+        const point = gridToCanvas(col, rowFromFreq(track.freqTrack[col]));
+        const coherence = track.coherenceTrack[col];
+        const noisiness = track.noisinessTrack[col];
+        const lightness = lerp(42, 64, coherence);
+        const saturation = lerp(72, 88, 1 - noisiness * 0.4);
+        ctx.strokeStyle = `hsla(${lerp(18, hue, coherence)}, ${saturation}%, ${lightness}%, 0.9)`;
+        if (!segmentOpen) {
+          ctx.beginPath();
+          ctx.moveTo(point.x, point.y);
+          segmentOpen = true;
+        } else {
+          ctx.lineTo(point.x, point.y);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(point.x, point.y);
+        }
+
+        if (track.noisinessTrack[col] > 0.58) {
+          ctx.fillStyle = `hsla(${lerp(22, 10, Math.min(1, noisiness))}, 88%, 62%, 0.36)`;
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 2 + noisiness * 2.8, 0, TAU);
+          ctx.fill();
+        }
+      }
+      if (track.phaseResetCols.length) {
+        ctx.strokeStyle = `hsla(${hue}, 92%, 72%, 0.95)`;
+        ctx.lineWidth = 1.6;
+        for (const col of track.phaseResetCols) {
+          if (col < visibleStartCol() || col > visibleEndCol()) {
+            continue;
+          }
+          const x = margins.left + ((col - visibleStartCol()) / Math.max(1, visibleColCount() - 1)) * plotWidth();
+          ctx.beginPath();
+          ctx.moveTo(x, y0 + 5);
+          ctx.lineTo(x, y0 + 18);
+          ctx.stroke();
+        }
+      }
+    }
+
+    ctx.restore();
+  }
+
   function renderCanvas() {
+    const diagnostics = getDiagnosticsSnapshot();
     repaintOffscreen();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -602,6 +759,7 @@
     ctx.restore();
 
     drawGridAndAxes();
+    drawPhaseDiagnosticsOverlay(diagnostics);
     drawPlayhead();
     drawLinePreview();
     drawPointerPreview();
@@ -856,6 +1014,7 @@
     state.isPlaying = false;
     state.isPaused = false;
     state.isScrubbingPlayhead = false;
+    state.lastPlaybackLoopIndex = 0;
     state.pausedOffsetSeconds = 0;
     state.playheadRatio = 0;
     if (state.rafId) {
@@ -872,11 +1031,14 @@
     if (!state.isPlaying || !state.audioContext || !state.renderedBuffer) {
       return;
     }
-    const offset = clamp(
+    let offset = clamp(
       state.audioContext.currentTime - state.playStartedAt,
       0,
       state.renderedBuffer.duration
     );
+    if (state.loopPlayback && state.renderedBuffer.duration > 0) {
+      offset = ((offset % state.renderedBuffer.duration) + state.renderedBuffer.duration) % state.renderedBuffer.duration;
+    }
     stopActiveSource();
     state.isPlaying = false;
     state.isPaused = true;
@@ -896,8 +1058,21 @@
       return;
     }
     const elapsed = state.audioContext.currentTime - state.playStartedAt;
-    state.playheadRatio = clamp(elapsed / state.renderedBuffer.duration, 0, 1);
-    followPlaybackViewport();
+    const duration = state.renderedBuffer.duration;
+    if (state.loopPlayback && duration > 0) {
+      const wrappedElapsed = ((elapsed % duration) + duration) % duration;
+      const loopIndex = Math.floor(Math.max(0, elapsed) / duration);
+      state.playheadRatio = wrappedElapsed / duration;
+      if (loopIndex !== state.lastPlaybackLoopIndex) {
+        state.lastPlaybackLoopIndex = loopIndex;
+        followPlaybackViewport({ allowBackward: true });
+      } else {
+        followPlaybackViewport();
+      }
+    } else {
+      state.playheadRatio = clamp(elapsed / duration, 0, 1);
+      followPlaybackViewport();
+    }
     renderCanvas();
     state.rafId = requestAnimationFrame(animatePlayhead);
   }
@@ -1054,6 +1229,7 @@
 
     for (let row = 0; row < GRID_ROWS; row += 1) {
       omegas[row] = (TAU * freqFromRow(row)) / RENDER_SAMPLE_RATE;
+      phases[row] = deterministicPhase(row * 2.173 + 11.7);
     }
 
     for (let col = 0; col < cols; col += 1) {
@@ -1061,10 +1237,20 @@
       const sampleEnd = Math.floor(((col + 1) / cols) * totalSamples);
       const segmentLength = Math.max(1, sampleEnd - sampleStart);
       const nextCol = Math.min(cols - 1, col + 1);
+      const prevCol = Math.max(0, col - 1);
+      const nextNextCol = Math.min(cols - 1, col + 2);
 
       for (let row = 0; row < GRID_ROWS; row += 1) {
-        const a0 = columnAmplitude(col, row);
-        const a1 = columnAmplitude(nextCol, row);
+        const a0 = (
+          columnAmplitude(prevCol, row)
+          + columnAmplitude(col, row) * 2
+          + columnAmplitude(nextCol, row)
+        ) * 0.25;
+        const a1 = (
+          columnAmplitude(col, row)
+          + columnAmplitude(nextCol, row) * 2
+          + columnAmplitude(nextNextCol, row)
+        ) * 0.25;
         if (a0 < EPSILON && a1 < EPSILON) {
           phases[row] += omegas[row] * segmentLength;
           phases[row] %= TAU;
@@ -1234,7 +1420,158 @@
     return output;
   }
 
-  function extractDrawVoiceTracks() {
+  function smoothstep01(t) {
+    const clamped = clamp(t, 0, 1);
+    return clamped * clamped * (3 - 2 * clamped);
+  }
+
+  function safeLogFreq(freq) {
+    return Math.log(Math.max(freq, minFrequency()));
+  }
+
+  function trackLocalValue(trackArray, col) {
+    return trackArray[clamp(col, 0, trackArray.length - 1)] || 0;
+  }
+
+  function deterministicPhase(seed) {
+    return (((Math.sin(seed * 12.9898 + 78.233) * 43758.5453123) % 1 + 1) % 1) * TAU;
+  }
+
+  function estimateLocalBandwidth(col, centerRow) {
+    const radius = 10;
+    let weightSum = 0;
+    let distanceSum = 0;
+    for (let row = Math.max(0, centerRow - radius); row <= Math.min(GRID_ROWS - 1, centerRow + radius); row += 1) {
+      const amp = columnAmplitude(col, row);
+      if (amp < EPSILON) {
+        continue;
+      }
+      const weight = Math.pow(amp, 1.15);
+      weightSum += weight;
+      distanceSum += weight * Math.abs(row - centerRow);
+    }
+    return weightSum > 0 ? distanceSum / weightSum : 0;
+  }
+
+  function estimateTrackMedianFreq(track) {
+    const values = [];
+    for (let col = track.firstCol; col <= track.lastCol; col += 1) {
+      if (track.activeTrack[col] > 0.1 && track.freqTrack[col] > 0) {
+        values.push(track.freqTrack[col]);
+      }
+    }
+    if (!values.length) {
+      return 220;
+    }
+    values.sort((a, b) => a - b);
+    return values[Math.floor(values.length / 2)];
+  }
+
+  function detectPhaseResetColumns(track) {
+    const cols = track.freqTrack.length;
+    const phaseResetMask = new Uint8Array(cols);
+    const phaseResetCols = [];
+    let lastResetCol = -8;
+    if (track.firstCol >= 0) {
+      phaseResetMask[track.firstCol] = 1;
+      phaseResetCols.push(track.firstCol);
+      lastResetCol = track.firstCol;
+    }
+    for (let col = track.firstCol + 1; col <= track.lastCol; col += 1) {
+      if (track.activeTrack[col] < 0.1) {
+        continue;
+      }
+      const amp = track.ampTrack[col];
+      const prevAmp = trackLocalValue(track.ampTrack, col - 1);
+      const rise = prevAmp > EPSILON ? (amp - prevAmp) / Math.max(prevAmp, 0.001) : amp > 0.06 ? 1 : 0;
+      const onset = trackLocalValue(track.activeTrack, col - 1) < 0.1 ? 1 : 0;
+      if (track.transientTrack[col] > 0.6 && (rise > 0.18 || onset > 0.5) && col - lastResetCol > 2) {
+        phaseResetMask[col] = 1;
+        phaseResetCols.push(col);
+        lastResetCol = col;
+      }
+    }
+    return { phaseResetCols, phaseResetMask };
+  }
+
+  function assignHarmonicGroups(tracks) {
+    if (tracks.length < 2) {
+      for (let i = 0; i < tracks.length; i += 1) {
+        tracks[i].harmonicGroupId = i;
+      }
+      return;
+    }
+
+    const parent = tracks.map((_, index) => index);
+    const harmonicNumbers = tracks.map(() => 1);
+
+    function find(index) {
+      if (parent[index] !== index) {
+        parent[index] = find(parent[index]);
+      }
+      return parent[index];
+    }
+
+    function union(a, b) {
+      const rootA = find(a);
+      const rootB = find(b);
+      if (rootA !== rootB) {
+        parent[rootB] = rootA;
+      }
+    }
+
+    const candidateRatios = [0.25, 1 / 3, 0.5, 2, 3, 4];
+    for (let i = 0; i < tracks.length; i += 1) {
+      for (let j = i + 1; j < tracks.length; j += 1) {
+        const overlapStart = Math.max(tracks[i].firstCol, tracks[j].firstCol);
+        const overlapEnd = Math.min(tracks[i].lastCol, tracks[j].lastCol);
+        const overlap = overlapEnd - overlapStart + 1;
+        if (overlap <= 6) {
+          continue;
+        }
+        const minSpan = Math.min(
+          tracks[i].lastCol - tracks[i].firstCol + 1,
+          tracks[j].lastCol - tracks[j].firstCol + 1
+        );
+        if (overlap / Math.max(1, minSpan) < 0.32) {
+          continue;
+        }
+        const ratio = estimateTrackMedianFreq(tracks[j]) / Math.max(estimateTrackMedianFreq(tracks[i]), minFrequency());
+        let bestRatio = 0;
+        let bestDistance = Infinity;
+        for (const candidate of candidateRatios) {
+          const distance = Math.abs(ratio - candidate) / candidate;
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestRatio = candidate;
+          }
+        }
+        if (bestDistance < 0.06) {
+          union(i, j);
+          harmonicNumbers[i] = 1;
+          harmonicNumbers[j] = bestRatio >= 1 ? Math.round(bestRatio) : 1 / bestRatio;
+        }
+      }
+    }
+
+    const groupMap = new Map();
+    let nextGroupId = 0;
+    for (let i = 0; i < tracks.length; i += 1) {
+      const root = find(i);
+      if (!groupMap.has(root)) {
+        groupMap.set(root, nextGroupId);
+        nextGroupId += 1;
+      }
+      const groupId = groupMap.get(root);
+      tracks[i].harmonicGroupId = groupId;
+      const basePhase = deterministicPhase(700 + groupId * 19.17);
+      const harmonicNumber = harmonicNumbers[i] || 1;
+      const phaseOffset = deterministicPhase(tracks[i].id * 0.37 + harmonicNumber * 0.19) * 0.08;
+      tracks[i].initialPhase = (basePhase * harmonicNumber + phaseOffset) % TAU;
+    }
+  }
+
+  function extractDrawVoiceTracks(analysis) {
     const cols = trackColCount();
     const maxPeaksPerColumn = 4;
     const peakColumns = new Array(cols);
@@ -1254,7 +1591,7 @@
           }
           const weight = weights[offset + radius];
           weightSum += weight;
-          valueSum += (isLogarithmic ? Math.log(Math.max(value, minFrequency())) : value) * weight;
+          valueSum += (isLogarithmic ? safeLogFreq(value) : value) * weight;
         }
         output[col] = weightSum > 0
           ? (isLogarithmic ? Math.exp(valueSum / weightSum) : valueSum / weightSum)
@@ -1286,7 +1623,7 @@
             }
             const weight = Math.pow(amp, 1.7);
             weightSum += weight;
-            logFreqSum += Math.log(freqFromRow(sampleRow)) * weight;
+            logFreqSum += safeLogFreq(freqFromRow(sampleRow)) * weight;
             ampSum += amp;
           }
           peaks.push({
@@ -1315,7 +1652,7 @@
           }
           const track = sparseTracks[trackId];
           const gap = col - track.lastCol;
-          const octaveDistance = Math.abs(Math.log(peak.freq / track.lastFreq)) / Math.log(2);
+          const octaveDistance = Math.abs(safeLogFreq(peak.freq) - safeLogFreq(track.lastFreq)) / Math.log(2);
           const rowDistance = Math.abs(peak.row - track.lastRow);
           const maxOctaveDistance = gap === 1 ? 0.22 : 0.16;
           if (octaveDistance > maxOctaveDistance || rowDistance > 12 + gap * 4) {
@@ -1329,7 +1666,7 @@
         }
         if (bestTrackId >= 0) {
           const track = sparseTracks[bestTrackId];
-          track.points.push({ col, freq: peak.freq, amp: peak.amp });
+          track.points.push({ col, freq: peak.freq, amp: peak.amp, row: peak.row });
           track.lastCol = col;
           track.lastFreq = peak.freq;
           track.lastRow = peak.row;
@@ -1337,7 +1674,7 @@
           usedTracks.add(bestTrackId);
         } else if (peak.amp > 0.05) {
           sparseTracks.push({
-            points: [{ col, freq: peak.freq, amp: peak.amp }],
+            points: [{ col, freq: peak.freq, amp: peak.amp, row: peak.row }],
             firstCol: col,
             lastCol: col,
             lastFreq: peak.freq,
@@ -1355,7 +1692,8 @@
 
     const viableTracks = sparseTracks.filter((track) => track.points.length >= 2 && track.totalAmp > 0.22);
     const denseTracks = [];
-    for (const track of viableTracks) {
+    for (let index = 0; index < viableTracks.length; index += 1) {
+      const track = viableTracks[index];
       const freqTrack = new Float64Array(cols);
       const ampTrack = new Float32Array(cols);
       const activeTrack = new Float32Array(cols);
@@ -1373,26 +1711,102 @@
         }
         for (let gapCol = current.col + 1; gapCol < next.col; gapCol += 1) {
           const t = (gapCol - current.col) / gap;
-          freqTrack[gapCol] = Math.exp(lerp(Math.log(current.freq), Math.log(next.freq), t));
+          freqTrack[gapCol] = Math.exp(lerp(safeLogFreq(current.freq), safeLogFreq(next.freq), t));
           ampTrack[gapCol] = lerp(current.amp, next.amp, t);
           activeTrack[gapCol] = 1;
         }
       }
+
       const smoothedFreq = smoothDenseTrack(freqTrack, [0.05, 0.1, 0.16, 0.22, 0.26, 0.22, 0.16, 0.1, 0.05], true, 0);
       const smoothedAmp = smoothDenseTrack(ampTrack, [0.07, 0.13, 0.19, 0.24, 0.28, 0.24, 0.19, 0.13, 0.07], false, 0);
-      denseTracks.push({
+      const coherenceTrack = new Float32Array(cols);
+      const noisinessTrack = new Float32Array(cols);
+      const transientTrack = new Float32Array(cols);
+
+      for (let col = track.firstCol; col <= track.lastCol; col += 1) {
+        if (activeTrack[col] < 0.1 || smoothedFreq[col] <= 0) {
+          continue;
+        }
+        const row = rowFromFreq(smoothedFreq[col]);
+        const bandwidth = estimateLocalBandwidth(col, row);
+        const confidence = analysis.confidence[col];
+        const ridgeCompetition = Math.max(0, analysis.ridgeCount[col] - 1);
+        const prevActive = trackLocalValue(activeTrack, col - 1) > 0.1;
+        const nextActive = trackLocalValue(activeTrack, col + 1) > 0.1;
+        const continuity = prevActive && nextActive ? 1 : prevActive || nextActive ? 0.68 : 0.32;
+        const prevFreq = trackLocalValue(smoothedFreq, col - 1) > 0 ? trackLocalValue(smoothedFreq, col - 1) : smoothedFreq[col];
+        const nextFreq = trackLocalValue(smoothedFreq, col + 1) > 0 ? trackLocalValue(smoothedFreq, col + 1) : smoothedFreq[col];
+        const prevSlope = safeLogFreq(smoothedFreq[col]) - safeLogFreq(prevFreq);
+        const nextSlope = safeLogFreq(nextFreq) - safeLogFreq(smoothedFreq[col]);
+        const slopeSmoothness = clamp(1 - Math.abs(nextSlope - prevSlope) / 0.12, 0, 1);
+        const bandwidthTightness = clamp(1 - bandwidth / 5.5, 0, 1);
+        const coherence = clamp(
+          (0.34 * confidence + 0.26 * bandwidthTightness + 0.2 * continuity + 0.2 * slopeSmoothness)
+            * clamp(1 - ridgeCompetition * 0.22, 0.25, 1),
+          0,
+          1
+        );
+        const noisiness = clamp(
+          (1 - confidence) * 0.35
+            + clamp(bandwidth / 6.5, 0, 1) * 0.35
+            + ridgeCompetition * 0.18
+            + (1 - continuity) * 0.12,
+          0,
+          1
+        );
+        const prevAmp = trackLocalValue(smoothedAmp, col - 1);
+        const ampRise = prevAmp > EPSILON ? (smoothedAmp[col] - prevAmp) / Math.max(prevAmp, 0.001) : smoothedAmp[col] > 0.06 ? 1 : 0;
+        const onset = prevActive ? 0 : 1;
+        const transient = clamp(
+          Math.max(0, ampRise) * 0.55 + onset * 0.4 + clamp(bandwidth / 5, 0, 1) * 0.18,
+          0,
+          1
+        );
+
+        coherenceTrack[col] = coherence;
+        noisinessTrack[col] = noisiness;
+        transientTrack[col] = transient;
+      }
+
+      const denseTrack = {
+        id: index,
         firstCol: track.firstCol,
         lastCol: track.lastCol,
         freqTrack: smoothedFreq,
         ampTrack: smoothedAmp,
-        activeTrack
-      });
+        activeTrack,
+        coherenceTrack,
+        noisinessTrack,
+        transientTrack,
+        phaseResetCols: [],
+        phaseResetMask: new Uint8Array(cols),
+        harmonicGroupId: -1,
+        initialPhase: deterministicPhase(
+          track.firstCol * 0.73
+            + track.lastCol * 1.91
+            + estimateTrackMedianFreq({
+              firstCol: track.firstCol,
+              lastCol: track.lastCol,
+              freqTrack: smoothedFreq,
+              ampTrack: smoothedAmp,
+              activeTrack
+            }) * 0.017
+        )
+      };
+      const resetInfo = detectPhaseResetColumns(denseTrack);
+      denseTrack.phaseResetCols = resetInfo.phaseResetCols;
+      denseTrack.phaseResetMask = resetInfo.phaseResetMask;
+      denseTracks.push(denseTrack);
     }
 
+    assignHarmonicGroups(denseTracks);
     return denseTracks;
   }
 
-  function buildDrawVoiceAudioData(analysis, tracks = extractDrawVoiceTracks()) {
+  // Phase is not painted per pixel. It is inferred from geometry: continuous ridges become
+  // coherent oscillators, fuzzy residual energy gets phase diffusion, and sharp vertical
+  // onsets reset phase.
+  function buildDrawVoiceAudioData(analysis, tracks = extractDrawVoiceTracks(analysis)) {
     const cols = trackColCount();
     const totalSamples = Math.max(1, Math.floor(durationSeconds() * RENDER_SAMPLE_RATE));
     const output = new Float32Array(totalSamples);
@@ -1401,16 +1815,16 @@
       return output;
     }
 
-    function smoothstep01(t) {
-      return t * t * (3 - 2 * t);
-    }
+    const resetRampSamples = Math.max(16, Math.floor(RENDER_SAMPLE_RATE * 0.0025));
+    const transientDecaySamples = Math.max(24, Math.floor(RENDER_SAMPLE_RATE * 0.01));
 
     for (const track of tracks) {
-      let phase1 = 0;
-      let phase2 = 0;
-      let phase3 = 0;
+      let phase1 = track.initialPhase;
+      let phase2 = (track.initialPhase * 2) % TAU;
+      let phase3 = (track.initialPhase * 3) % TAU;
       let lastFreq = track.freqTrack[track.firstCol] > 0 ? track.freqTrack[track.firstCol] : 220;
       let smoothedFreq = lastFreq;
+
       for (let col = track.firstCol; col <= track.lastCol; col += 1) {
         const sampleStart = Math.floor((col / cols) * totalSamples);
         const sampleEnd = Math.floor(((col + 1) / cols) * totalSamples);
@@ -1421,23 +1835,69 @@
         if (amp0 < EPSILON && amp1 < EPSILON) {
           continue;
         }
+
         const freq0 = track.freqTrack[col] > 0 ? track.freqTrack[col] : lastFreq;
         const freq1 = track.freqTrack[nextCol] > 0 ? track.freqTrack[nextCol] : freq0;
-        const logFreq0 = Math.log(Math.max(freq0, minFrequency()));
-        const logFreq1 = Math.log(Math.max(freq1, minFrequency()));
+        const logFreq0 = safeLogFreq(freq0);
+        const logFreq1 = safeLogFreq(freq1);
+        const resetHere = track.phaseResetMask[col] > 0;
+
+        let oldPhase1 = phase1;
+        let oldPhase2 = phase2;
+        let oldPhase3 = phase3;
+        let newPhase1 = resetHere ? track.initialPhase : phase1;
+        let newPhase2 = resetHere ? (track.initialPhase * 2) % TAU : phase2;
+        let newPhase3 = resetHere ? (track.initialPhase * 3) % TAU : phase3;
+        const resetRamp = resetHere ? Math.min(resetRampSamples, segmentLength) : 0;
 
         for (let sample = sampleStart; sample < sampleEnd; sample += 1) {
-          const localT = smoothstep01((sample - sampleStart) / segmentLength);
+          const segmentOffset = sample - sampleStart;
+          const localT = smoothstep01(segmentOffset / segmentLength);
           const targetFreq = Math.exp(lerp(logFreq0, logFreq1, localT));
-          smoothedFreq += (targetFreq - smoothedFreq) * 0.18;
-          const amp = Math.pow(lerp(amp0, amp1, localT), 1.04);
-          phase1 += (TAU * smoothedFreq) / RENDER_SAMPLE_RATE;
-          phase2 += (TAU * smoothedFreq * 2) / RENDER_SAMPLE_RATE;
-          phase3 += (TAU * smoothedFreq * 3) / RENDER_SAMPLE_RATE;
-          const body = Math.sin(phase1) * 0.94 + Math.sin(phase2) * 0.045 + Math.sin(phase3) * 0.015;
-          output[sample] += amp * Math.tanh(body * 1.18);
+          const coherence = lerp(track.coherenceTrack[col], track.coherenceTrack[nextCol], localT);
+          const noisiness = lerp(track.noisinessTrack[col], track.noisinessTrack[nextCol], localT);
+          const transient = lerp(track.transientTrack[col], track.transientTrack[nextCol], localT);
+          const smoothing = lerp(0.08, 0.22, coherence);
+          smoothedFreq += (targetFreq - smoothedFreq) * smoothing;
+
+          const diffusion = 0.006 * noisiness * (1 - coherence)
+            * deterministicNoise(sample * 0.91 + track.id * 17.11 + col * 0.13);
+          const baseIncrement = (TAU * smoothedFreq) / RENDER_SAMPLE_RATE;
+          const phaseIncrement = baseIncrement + diffusion;
+          const harmonic2Increment = baseIncrement * 2 + diffusion * 1.2;
+          const harmonic3Increment = baseIncrement * 3 + diffusion * 1.35;
+
+          oldPhase1 += phaseIncrement;
+          oldPhase2 += harmonic2Increment;
+          oldPhase3 += harmonic3Increment;
+          newPhase1 += phaseIncrement;
+          newPhase2 += harmonic2Increment;
+          newPhase3 += harmonic3Increment;
+
+          const amp = Math.pow(lerp(amp0, amp1, localT), 1.02) * (0.94 + 0.08 * coherence);
+          const transientShape = 1 + transient * 0.18 * Math.exp(-segmentOffset / transientDecaySamples);
+          const harmonic2Gain = 0.045 + transient * 0.06 * Math.exp(-segmentOffset / transientDecaySamples);
+          const harmonic3Gain = 0.015 + transient * 0.03 * Math.exp(-segmentOffset / transientDecaySamples);
+
+          const coherentBody = Math.sin(newPhase1) * 0.94
+            + Math.sin(newPhase2) * harmonic2Gain
+            + Math.sin(newPhase3) * harmonic3Gain;
+
+          if (resetRamp > 0 && segmentOffset < resetRamp) {
+            const blend = smoothstep01(segmentOffset / Math.max(1, resetRamp - 1));
+            const oldBody = Math.sin(oldPhase1) * 0.94
+              + Math.sin(oldPhase2) * harmonic2Gain
+              + Math.sin(oldPhase3) * harmonic3Gain;
+            const body = lerp(oldBody, coherentBody, blend);
+            output[sample] += amp * transientShape * Math.tanh(body * 1.16);
+          } else {
+            output[sample] += amp * transientShape * Math.tanh(coherentBody * 1.16);
+          }
         }
 
+        phase1 = newPhase1;
+        phase2 = newPhase2;
+        phase3 = newPhase3;
         lastFreq = freq1;
       }
     }
@@ -1454,42 +1914,53 @@
 
     for (let row = 0; row < GRID_ROWS; row += 1) {
       omegas[row] = (TAU * freqFromRow(row)) / RENDER_SAMPLE_RATE;
-      phases[row] = ((row * 0.61803398875) % 1) * TAU;
+      phases[row] = deterministicPhase(row * 1.618);
     }
 
-    function residualAmplitude(col, row) {
+    function residualProfile(col, row) {
       const base = columnAmplitude(col, row);
       if (base < EPSILON) {
-        return 0;
+        return { amp: 0, diffuseness: 0, stability: 0 };
       }
 
       let attenuation = 1;
+      let coherenceShield = 0;
       for (const track of tracks) {
         if (col < track.firstCol || col > track.lastCol) {
           continue;
         }
         const trackAmp = track.ampTrack[col];
         const trackFreq = track.freqTrack[col];
+        const trackCoherence = track.coherenceTrack[col];
         if (trackAmp < 0.02 || trackFreq <= 0) {
           continue;
         }
         const centerRow = rowFromFreq(trackFreq);
         const rowDistance = Math.abs(row - centerRow);
+        let proximity = 0;
         if (rowDistance <= 1) {
           attenuation *= 0.03;
+          proximity = 1;
         } else if (rowDistance <= 3) {
           attenuation *= 0.16;
+          proximity = 0.72;
         } else if (rowDistance <= 5) {
           attenuation *= 0.42;
+          proximity = 0.36;
         }
+        coherenceShield = Math.max(coherenceShield, trackCoherence * proximity);
       }
 
-      const diffuseMix = clamp(
-        (1 - analysis.confidence[col]) * 1.18 + Math.max(0, analysis.ridgeCount[col] - 1) * 0.12,
+      const diffuseBase = clamp(
+        (1 - analysis.confidence[col]) * 1.05
+          + Math.max(0, analysis.ridgeCount[col] - 1) * 0.12
+          + estimateLocalBandwidth(col, row) / 10 * 0.18,
         0,
-        0.92
+        0.95
       );
-      return Math.pow(base, 1.08) * attenuation * diffuseMix;
+      const diffuseness = clamp(diffuseBase * (1 - coherenceShield * 0.72), 0, 1);
+      const amp = Math.pow(base, 1.08) * attenuation * diffuseBase;
+      return { amp, diffuseness, stability: coherenceShield };
     }
 
     for (let col = 0; col < cols; col += 1) {
@@ -1499,20 +1970,27 @@
       const nextCol = Math.min(cols - 1, col + 1);
 
       for (let row = 0; row < GRID_ROWS; row += 1) {
-        const a0 = residualAmplitude(col, row);
-        const a1 = residualAmplitude(nextCol, row);
-        if (a0 < EPSILON && a1 < EPSILON) {
+        const profile0 = residualProfile(col, row);
+        const profile1 = residualProfile(nextCol, row);
+        if (profile0.amp < EPSILON && profile1.amp < EPSILON) {
           phases[row] += omegas[row] * segmentLength;
           phases[row] %= TAU;
           continue;
         }
         let phase = phases[row];
-        const omega = omegas[row];
+        const baseOmega = omegas[row];
+        const rowDetune = 1 + 0.0009 * (1 - analysis.confidence[col])
+          * deterministicNoise(row * 31.7 + col * 0.73);
+        const omega = baseOmega * rowDetune;
         for (let sample = sampleStart; sample < sampleEnd; sample += 1) {
           const localT = (sample - sampleStart) / segmentLength;
-          const amplitude = lerp(a0, a1, localT);
+          const amplitude = lerp(profile0.amp, profile1.amp, localT);
+          const diffuseness = lerp(profile0.diffuseness, profile1.diffuseness, localT);
+          const stability = lerp(profile0.stability, profile1.stability, localT);
+          const phaseDiffusion = 0.012 * diffuseness * (1 - stability)
+            * deterministicNoise(sample * 0.77 + row * 13.3 + col * 0.41);
           output[sample] += amplitude * Math.sin(phase);
-          phase += omega;
+          phase += omega + phaseDiffusion;
         }
         phases[row] = phase % TAU;
       }
@@ -1641,23 +2119,447 @@
     return output;
   }
 
+  function buildGeometryCoherenceAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
+    const drawVoices = buildDrawVoiceAudioData(analysis, tracks);
+    const drawResidual = buildDrawResidualAudioData(analysis, tracks);
+    const output = new Float32Array(totalSamples);
+    for (let i = 0; i < output.length; i += 1) {
+      output[i] = drawVoices[i] + drawResidual[i] * 0.82;
+    }
+    return {
+      samples: output,
+      tracks
+    };
+  }
+
+  function buildIndependentOscillatorAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
+    const cols = trackColCount();
+    const output = new Float32Array(totalSamples);
+
+    for (const track of tracks) {
+      let phase1 = deterministicPhase(track.firstCol * 0.71 + track.id * 13.1 + 0.9);
+      let phase2 = deterministicPhase(track.firstCol * 0.31 + track.id * 23.7 + 1.7);
+      let phase3 = deterministicPhase(track.firstCol * 0.19 + track.id * 31.3 + 2.1);
+      let lastFreq = track.freqTrack[track.firstCol] > 0 ? track.freqTrack[track.firstCol] : 220;
+
+      for (let col = track.firstCol; col <= track.lastCol; col += 1) {
+        if (track.activeTrack[col] < 0.1) {
+          continue;
+        }
+        const sampleStart = Math.floor((col / cols) * totalSamples);
+        const sampleEnd = Math.floor(((col + 1) / cols) * totalSamples);
+        const segmentLength = Math.max(1, sampleEnd - sampleStart);
+        const nextCol = Math.min(cols - 1, col + 1);
+        const amp0 = track.ampTrack[col];
+        const amp1 = track.ampTrack[nextCol];
+        if (amp0 < EPSILON && amp1 < EPSILON) {
+          continue;
+        }
+        const freq0 = track.freqTrack[col] > 0 ? track.freqTrack[col] : lastFreq;
+        const freq1 = track.freqTrack[nextCol] > 0 ? track.freqTrack[nextCol] : freq0;
+        const logFreq0 = safeLogFreq(freq0);
+        const logFreq1 = safeLogFreq(freq1);
+
+        for (let sample = sampleStart; sample < sampleEnd; sample += 1) {
+          const localT = smoothstep01((sample - sampleStart) / segmentLength);
+          const freq = Math.exp(lerp(logFreq0, logFreq1, localT));
+          const amp = Math.pow(lerp(amp0, amp1, localT), 1.01);
+          phase1 += (TAU * freq) / RENDER_SAMPLE_RATE;
+          phase2 += (TAU * freq * 2) / RENDER_SAMPLE_RATE;
+          phase3 += (TAU * freq * 3) / RENDER_SAMPLE_RATE;
+          output[sample] += amp * (
+            Math.sin(phase1) * 0.94
+              + Math.sin(phase2) * 0.085
+              + Math.sin(phase3) * 0.025
+          );
+        }
+
+        lastFreq = freq1;
+      }
+    }
+
+    return {
+      samples: output,
+      tracks
+    };
+  }
+
+  function buildSpectralBinAudioData() {
+    return {
+      samples: buildSpectralAudioData(),
+      tracks: []
+    };
+  }
+
+  let cachedStftPlan = null;
+
+  function getStftPlan() {
+    if (cachedStftPlan) {
+      return cachedStftPlan;
+    }
+
+    const size = STFT_SIZE;
+    const window = new Float32Array(size);
+    for (let i = 0; i < size; i += 1) {
+      window[i] = 0.5 - 0.5 * Math.cos((TAU * i) / (size - 1));
+    }
+
+    const bitReverse = new Uint16Array(size);
+    const bits = Math.round(Math.log2(size));
+    for (let i = 0; i < size; i += 1) {
+      let reversed = 0;
+      let value = i;
+      for (let bit = 0; bit < bits; bit += 1) {
+        reversed = (reversed << 1) | (value & 1);
+        value >>= 1;
+      }
+      bitReverse[i] = reversed;
+    }
+
+    cachedStftPlan = {
+      size,
+      hop: STFT_HOP,
+      halfBins: size / 2 + 1,
+      window,
+      bitReverse
+    };
+    return cachedStftPlan;
+  }
+
+  function fftTransform(real, imag, inverse, bitReverse) {
+    const size = real.length;
+    for (let i = 0; i < size; i += 1) {
+      const j = bitReverse[i];
+      if (j > i) {
+        const tmpReal = real[i];
+        const tmpImag = imag[i];
+        real[i] = real[j];
+        imag[i] = imag[j];
+        real[j] = tmpReal;
+        imag[j] = tmpImag;
+      }
+    }
+
+    for (let step = 2; step <= size; step <<= 1) {
+      const halfStep = step >> 1;
+      const angle = (inverse ? TAU : -TAU) / step;
+      const wMulReal = Math.cos(angle);
+      const wMulImag = Math.sin(angle);
+      for (let start = 0; start < size; start += step) {
+        let wReal = 1;
+        let wImag = 0;
+        for (let offset = 0; offset < halfStep; offset += 1) {
+          const evenIndex = start + offset;
+          const oddIndex = evenIndex + halfStep;
+          const oddReal = real[oddIndex] * wReal - imag[oddIndex] * wImag;
+          const oddImag = real[oddIndex] * wImag + imag[oddIndex] * wReal;
+          const evenReal = real[evenIndex];
+          const evenImag = imag[evenIndex];
+          real[evenIndex] = evenReal + oddReal;
+          imag[evenIndex] = evenImag + oddImag;
+          real[oddIndex] = evenReal - oddReal;
+          imag[oddIndex] = evenImag - oddImag;
+          const nextWReal = wReal * wMulReal - wImag * wMulImag;
+          const nextWImag = wReal * wMulImag + wImag * wMulReal;
+          wReal = nextWReal;
+          wImag = nextWImag;
+        }
+      }
+    }
+
+    if (inverse) {
+      for (let i = 0; i < size; i += 1) {
+        real[i] /= size;
+        imag[i] /= size;
+      }
+    }
+  }
+
+  function stftFrameCount(totalSamples, plan = getStftPlan()) {
+    return Math.max(1, Math.ceil(Math.max(0, totalSamples - plan.size) / plan.hop) + 1);
+  }
+
+  function forwardStft(samples, totalSamples = samples.length, plan = getStftPlan()) {
+    const frameCount = stftFrameCount(totalSamples, plan);
+    const realFrames = new Array(frameCount);
+    const imagFrames = new Array(frameCount);
+
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      const startSample = frame * plan.hop;
+      const real = new Float64Array(plan.size);
+      const imag = new Float64Array(plan.size);
+      for (let i = 0; i < plan.size; i += 1) {
+        const sampleIndex = startSample + i;
+        real[i] = sampleIndex < samples.length ? samples[sampleIndex] * plan.window[i] : 0;
+      }
+      fftTransform(real, imag, false, plan.bitReverse);
+      const positiveReal = new Float32Array(plan.halfBins);
+      const positiveImag = new Float32Array(plan.halfBins);
+      for (let bin = 0; bin < plan.halfBins; bin += 1) {
+        positiveReal[bin] = real[bin];
+        positiveImag[bin] = imag[bin];
+      }
+      realFrames[frame] = positiveReal;
+      imagFrames[frame] = positiveImag;
+    }
+
+    return {
+      frameCount,
+      realFrames,
+      imagFrames
+    };
+  }
+
+  function inverseStft(realFrames, imagFrames, totalSamples, plan = getStftPlan()) {
+    const outputLength = totalSamples + plan.size;
+    const output = new Float32Array(outputLength);
+    const weight = new Float32Array(outputLength);
+
+    for (let frame = 0; frame < realFrames.length; frame += 1) {
+      const startSample = frame * plan.hop;
+      const real = new Float64Array(plan.size);
+      const imag = new Float64Array(plan.size);
+      for (let bin = 0; bin < plan.halfBins; bin += 1) {
+        real[bin] = realFrames[frame][bin];
+        imag[bin] = imagFrames[frame][bin];
+      }
+      for (let bin = 1; bin < plan.halfBins - 1; bin += 1) {
+        const mirror = plan.size - bin;
+        real[mirror] = realFrames[frame][bin];
+        imag[mirror] = -imagFrames[frame][bin];
+      }
+      fftTransform(real, imag, true, plan.bitReverse);
+      for (let i = 0; i < plan.size; i += 1) {
+        const sampleIndex = startSample + i;
+        if (sampleIndex >= output.length) {
+          break;
+        }
+        const windowed = real[i] * plan.window[i];
+        output[sampleIndex] += windowed;
+        weight[sampleIndex] += plan.window[i] * plan.window[i];
+      }
+    }
+
+    const trimmed = new Float32Array(totalSamples);
+    for (let i = 0; i < totalSamples; i += 1) {
+      trimmed[i] = weight[i] > EPSILON ? output[i] / weight[i] : 0;
+    }
+    return trimmed;
+  }
+
+  function fractionalRowFromFreq(freq) {
+    const minFreq = minFrequency();
+    const maxFreq = Math.max(minFreq + 1, maxFrequency());
+    const clampedFreq = clamp(freq, minFreq, maxFreq);
+    const ratio = Math.log(clampedFreq / minFreq) / Math.log(maxFreq / minFreq);
+    return clamp((1 - ratio) * (GRID_ROWS - 1), 0, GRID_ROWS - 1);
+  }
+
+  function drawAmplitudeAtFractional(colF, rowF) {
+    const maxCol = Math.max(0, trackColCount() - 1);
+    const clampedCol = clamp(colF, 0, maxCol);
+    const clampedRow = clamp(rowF, 0, GRID_ROWS - 1);
+    const col0 = Math.floor(clampedCol);
+    const col1 = Math.min(maxCol, col0 + 1);
+    const row0 = Math.floor(clampedRow);
+    const row1 = Math.min(GRID_ROWS - 1, row0 + 1);
+    const tx = clampedCol - col0;
+    const ty = clampedRow - row0;
+    const v00 = amplitudeAt(drawData, col0, row0);
+    const v10 = amplitudeAt(drawData, col1, row0);
+    const v01 = amplitudeAt(drawData, col0, row1);
+    const v11 = amplitudeAt(drawData, col1, row1);
+    const top = lerp(v00, v10, tx);
+    const bottom = lerp(v01, v11, tx);
+    const value = lerp(top, bottom, ty);
+    const tilt = 0.75 + 0.25 * (1 - clampedRow / (GRID_ROWS - 1));
+    return Math.pow(value, 1.45) * tilt;
+  }
+
+  function buildTargetMagnitudeSpectrogram(totalSamples, plan = getStftPlan()) {
+    const frameCount = stftFrameCount(totalSamples, plan);
+    const magnitudes = new Array(frameCount);
+    const totalCols = Math.max(1, trackColCount() - 1);
+    const totalSampleSpan = Math.max(1, totalSamples - 1);
+
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      const frameCenterSample = Math.min(totalSampleSpan, frame * plan.hop + plan.size * 0.5);
+      const colF = (frameCenterSample / totalSampleSpan) * totalCols;
+      const frameMagnitude = new Float32Array(plan.halfBins);
+      for (let bin = 1; bin < plan.halfBins; bin += 1) {
+        const freq = (bin * RENDER_SAMPLE_RATE) / plan.size;
+        if (freq < minFrequency() || freq > maxFrequency()) {
+          continue;
+        }
+        const rowF = fractionalRowFromFreq(freq);
+        const amplitude = (
+          drawAmplitudeAtFractional(colF - 0.22, rowF)
+          + drawAmplitudeAtFractional(colF, rowF)
+          + drawAmplitudeAtFractional(colF + 0.22, rowF)
+        ) / 3;
+        frameMagnitude[bin] = amplitude;
+      }
+      magnitudes[frame] = frameMagnitude;
+    }
+
+    return magnitudes;
+  }
+
+  function phaseFramesFromSeed(seedSamples, totalSamples, plan = getStftPlan()) {
+    const seedStft = forwardStft(seedSamples, totalSamples, plan);
+    const phases = new Array(seedStft.frameCount);
+    for (let frame = 0; frame < seedStft.frameCount; frame += 1) {
+      const phaseFrame = new Float32Array(plan.halfBins);
+      for (let bin = 0; bin < plan.halfBins; bin += 1) {
+        phaseFrame[bin] = Math.atan2(seedStft.imagFrames[frame][bin], seedStft.realFrames[frame][bin]);
+      }
+      phases[frame] = phaseFrame;
+    }
+    return phases;
+  }
+
+  function deterministicPhaseFrames(frameCount, plan = getStftPlan()) {
+    const phases = new Array(frameCount);
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      const phaseFrame = new Float32Array(plan.halfBins);
+      for (let bin = 0; bin < plan.halfBins; bin += 1) {
+        phaseFrame[bin] = deterministicPhase(frame * 131 + bin * 17);
+      }
+      phases[frame] = phaseFrame;
+    }
+    return phases;
+  }
+
+  function reconstructFromMagnitudes(targetMagnitudes, totalSamples, iterations, phaseFrames) {
+    const plan = getStftPlan();
+    const frameCount = targetMagnitudes.length;
+    let currentPhases = phaseFrames || deterministicPhaseFrames(frameCount, plan);
+    let timeSignal = new Float32Array(totalSamples);
+
+    // Griffin-Lim tries to find STFT phases that are self-consistent with a real signal.
+    // It keeps the painted magnitudes fixed, repeatedly inverts to time domain, and then
+    // projects back to an STFT with updated phases. Magnitude-only reconstructions often
+    // sound metallic or phasey because many different waveforms share similar magnitudes.
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      const realFrames = new Array(frameCount);
+      const imagFrames = new Array(frameCount);
+      for (let frame = 0; frame < frameCount; frame += 1) {
+        const real = new Float32Array(plan.halfBins);
+        const imag = new Float32Array(plan.halfBins);
+        for (let bin = 0; bin < plan.halfBins; bin += 1) {
+          const magnitude = targetMagnitudes[frame][bin];
+          const phase = currentPhases[frame][bin];
+          real[bin] = magnitude * Math.cos(phase);
+          imag[bin] = magnitude * Math.sin(phase);
+        }
+        realFrames[frame] = real;
+        imagFrames[frame] = imag;
+      }
+      timeSignal = inverseStft(realFrames, imagFrames, totalSamples, plan);
+      const updated = forwardStft(timeSignal, totalSamples, plan);
+      const nextPhases = new Array(frameCount);
+      for (let frame = 0; frame < frameCount; frame += 1) {
+        const phaseFrame = new Float32Array(plan.halfBins);
+        for (let bin = 0; bin < plan.halfBins; bin += 1) {
+          phaseFrame[bin] = Math.atan2(updated.imagFrames[frame][bin], updated.realFrames[frame][bin]);
+        }
+        nextPhases[frame] = phaseFrame;
+      }
+      currentPhases = nextPhases;
+    }
+
+    const finalRealFrames = new Array(frameCount);
+    const finalImagFrames = new Array(frameCount);
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      const real = new Float32Array(plan.halfBins);
+      const imag = new Float32Array(plan.halfBins);
+      for (let bin = 0; bin < plan.halfBins; bin += 1) {
+        const magnitude = targetMagnitudes[frame][bin];
+        const phase = currentPhases[frame][bin];
+        real[bin] = magnitude * Math.cos(phase);
+        imag[bin] = magnitude * Math.sin(phase);
+      }
+      finalRealFrames[frame] = real;
+      finalImagFrames[frame] = imag;
+    }
+
+    return inverseStft(finalRealFrames, finalImagFrames, totalSamples, plan);
+  }
+
+  function buildGriffinLimAudioData(analysis, totalSamples, options = {}) {
+    const targetMagnitudes = buildTargetMagnitudeSpectrogram(totalSamples);
+    const plan = getStftPlan();
+    const frameCount = targetMagnitudes.length;
+    const phaseSeed = options.phaseSeedSamples
+      ? phaseFramesFromSeed(options.phaseSeedSamples, totalSamples, plan)
+      : deterministicPhaseFrames(frameCount, plan);
+    const samples = reconstructFromMagnitudes(
+      targetMagnitudes,
+      totalSamples,
+      options.iterations || GRIFFIN_LIM_ITERATIONS,
+      phaseSeed
+    );
+    return {
+      samples,
+      tracks: options.tracks || [],
+      iterations: options.iterations || GRIFFIN_LIM_ITERATIONS
+    };
+  }
+
+  function buildHybridAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
+    const geometry = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
+    const griffin = buildGriffinLimAudioData(analysis, totalSamples, {
+      iterations: HYBRID_GRIFFIN_LIM_ITERATIONS,
+      phaseSeedSamples: geometry.samples,
+      tracks
+    });
+    return {
+      samples: griffin.samples,
+      tracks,
+      iterations: HYBRID_GRIFFIN_LIM_ITERATIONS
+    };
+  }
+
   function buildAudioData() {
     const analysis = analyzeColumns();
     const totalSamples = Math.max(1, Math.floor(durationSeconds() * RENDER_SAMPLE_RATE));
     state.playDurationSeconds = durationSeconds();
-    const tracks = extractDrawVoiceTracks();
-    const drawVoices = buildDrawVoiceAudioData(analysis, tracks);
-    const drawResidual = buildDrawResidualAudioData(analysis, tracks);
+    const tracks = extractDrawVoiceTracks(analysis);
+    let drawRender;
+
+    switch (state.renderMode) {
+      case "independent":
+        drawRender = buildIndependentOscillatorAudioData(analysis, totalSamples, tracks);
+        break;
+      case "spectral":
+        drawRender = buildSpectralBinAudioData(analysis, totalSamples);
+        break;
+      case "griffin":
+        drawRender = buildGriffinLimAudioData(analysis, totalSamples, { tracks });
+        break;
+      case "hybrid":
+        drawRender = buildHybridAudioData(analysis, totalSamples, tracks);
+        break;
+      case "geometry":
+      default:
+        drawRender = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
+        break;
+    }
+
     const bass = buildBassEventAudioData(totalSamples);
     const output = new Float32Array(totalSamples);
-
     for (let i = 0; i < output.length; i += 1) {
-      output[i] = drawVoices[i] + drawResidual[i] * 0.82 + bass[i];
+      output[i] = drawRender.samples[i] + bass[i];
     }
 
     normalizeAudioData(output);
     applyEdgeFade(output);
-    return output;
+    return {
+      samples: output,
+      iterations: drawRender.iterations || 0,
+      tracks,
+      analysis
+    };
   }
 
   function encodeWav(samples, sampleRate) {
@@ -1699,26 +2601,44 @@
       return state.renderedBuffer;
     }
     const token = ++state.renderToken;
-    setStatus(`Rendering ${reason} in ${RENDER_MODE_LABEL.toLowerCase()} mode...`);
+    setStatus(`Rendering ${reason} using ${renderModeName(state.renderMode).toLowerCase()}...`);
     await new Promise((resolve) => window.requestAnimationFrame(resolve));
 
-    const samples = buildAudioData();
+    const startedAt = performance.now();
+    const renderResult = buildAudioData();
+    const elapsedMs = performance.now() - startedAt;
     if (token !== state.renderToken) {
       return null;
     }
 
     const audioContext = createAudioContext();
+    const samples = renderResult.samples;
     const buffer = audioContext.createBuffer(1, samples.length, RENDER_SAMPLE_RATE);
     buffer.copyToChannel(samples, 0, 0);
     state.renderedBuffer = buffer;
     state.playDurationSeconds = buffer.duration;
+    state.latestRenderInfo = {
+      mode: state.renderMode,
+      iterations: renderResult.iterations || 0,
+      elapsedMs,
+      sampleCount: samples.length
+    };
+    state.diagnosticsCache = {
+      version: state.dataVersion,
+      snapshot: {
+        analysis: renderResult.analysis,
+        tracks: renderResult.tracks
+      }
+    };
     if (state.isPaused) {
       state.pausedOffsetSeconds = clamp(state.pausedOffsetSeconds, 0, buffer.duration);
       state.playheadRatio = buffer.duration > 0 ? state.pausedOffsetSeconds / buffer.duration : 0;
     }
     state.renderedWav = encodeWav(samples, RENDER_SAMPLE_RATE);
     state.dirty = false;
-    setStatus(`Rendered ${buffer.duration.toFixed(2)} seconds of audio.`);
+    const modeSummary = renderModeName(state.renderMode);
+    const iterationSummary = renderResult.iterations > 0 ? ` · ${renderResult.iterations} iterations` : "";
+    setStatus(`Rendered using: ${modeSummary} · ${elapsedMs.toFixed(1)} ms · ${samples.length} samples${iterationSummary}`);
     return buffer;
   }
 
@@ -1737,6 +2657,7 @@
 
     const source = audioContext.createBufferSource();
     source.buffer = buffer;
+    source.loop = state.loopPlayback;
     state.gainNode.gain.value = Number(gainInput.value);
     source.connect(state.gainNode);
     source.onended = () => {
@@ -1751,9 +2672,10 @@
     const startOffset = state.pausedOffsetSeconds >= buffer.duration - 0.01 ? 0 : clamp(state.pausedOffsetSeconds, 0, buffer.duration);
     state.playStartedAt = audioContext.currentTime - startOffset;
     state.playheadRatio = buffer.duration > 0 ? startOffset / buffer.duration : 0;
+    state.lastPlaybackLoopIndex = 0;
     followPlaybackViewport({ allowBackward: true });
     source.start(0, startOffset);
-    setStatus("Playing rendered audio.");
+    setStatus(state.loopPlayback ? "Playing rendered audio in loop mode." : "Playing rendered audio.");
     renderCanvas();
     state.rafId = requestAnimationFrame(animatePlayhead);
   }
@@ -2191,6 +3113,16 @@
     const next = clamp(Math.round(nextOffset), 0, maxViewOffset());
     const changed = next !== state.viewOffsetCol;
     state.viewOffsetCol = next;
+    if (renderModeSelect) {
+      state.renderMode = renderModeSelect.value || "geometry";
+    }
+    if (phaseDiagnosticsToggle) {
+      state.showPhaseDiagnostics = phaseDiagnosticsToggle.checked;
+    }
+    if (loopToggle) {
+      state.loopPlayback = loopToggle.checked;
+    }
+
     updateOutputs();
     if (options.render !== false || !changed) {
       renderCanvas();
@@ -2326,6 +3258,36 @@
         state.gainNode.gain.value = Number(gainInput.value);
       }
     });
+
+    if (loopToggle) {
+      loopToggle.addEventListener("change", () => {
+        state.loopPlayback = loopToggle.checked;
+        if (state.sourceNode) {
+          state.sourceNode.loop = state.loopPlayback;
+          setStatus(state.loopPlayback ? "Loop playback enabled." : "Loop playback disabled.");
+        }
+      });
+    }
+
+    if (renderModeSelect) {
+      renderModeSelect.addEventListener("input", () => {
+        state.renderMode = renderModeSelect.value;
+        updateOutputs();
+        markDirty();
+        if (state.isPlaying) {
+          stopPlayback(`Render mode switched to ${renderModeName(state.renderMode)}.`);
+        } else {
+          renderCanvas();
+        }
+      });
+    }
+
+    if (phaseDiagnosticsToggle) {
+      phaseDiagnosticsToggle.addEventListener("change", () => {
+        state.showPhaseDiagnostics = phaseDiagnosticsToggle.checked;
+        renderCanvas();
+      });
+    }
 
     gridToggle.addEventListener("change", renderCanvas);
 
