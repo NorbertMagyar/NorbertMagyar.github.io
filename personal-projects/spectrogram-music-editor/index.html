@@ -140,15 +140,6 @@
           <section class="editor-shell">
             <div class="editor-surface">
               <div class="surface-toolbar">
-                <div class="button-row">
-                  <button id="play-btn" type="button" class="action-btn primary-btn">Play</button>
-                  <button id="pause-btn" type="button" class="action-btn">Pause</button>
-                  <button id="stop-btn" type="button" class="action-btn">Stop</button>
-                  <button id="render-btn" type="button" class="action-btn">Render</button>
-                  <button id="export-btn" type="button" class="action-btn">Export WAV</button>
-                  <button id="undo-btn" type="button" class="action-btn">Undo</button>
-                  <button id="clear-btn" type="button" class="action-btn danger-btn">Clear</button>
-                </div>
                 <div class="button-row tool-row" role="toolbar" aria-label="Tool selection">
                   <button type="button" class="tool-btn is-active" data-tool="brush">
                     <span class="tool-icon" aria-hidden="true">
@@ -174,11 +165,17 @@
                     </span>
                     <span>Line</span>
                   </button>
-                  <button type="button" class="tool-btn" data-tool="note" hidden>
+                  <button type="button" class="tool-btn note-tool-btn" data-tool="note" hidden>
                     <span class="tool-icon" aria-hidden="true">
                       <svg viewBox="0 0 24 24"><rect x="4" y="9" width="16" height="6" rx="1.2"/><path d="M4 12h16"/></svg>
                     </span>
                     <span>Note</span>
+                    <span
+                      class="hover-help note-tool-help"
+                      tabindex="0"
+                      aria-label="About the Note tool"
+                      data-help="The Note tool draws snapped musical notes with fixed, quantized durations. It only works in the Guitar score sheet or Grand piano score sheet editor views."
+                    >?</span>
                   </button>
                   <button type="button" class="tool-btn" data-tool="erase">
                     <span class="tool-icon" aria-hidden="true">
@@ -187,11 +184,136 @@
                     <span>Erase</span>
                   </button>
                 </div>
+                <div class="toolbar-subrow">
+                  <div id="tool-settings-wrap" class="tool-settings-wrap" hidden>
+                    <button
+                      id="tool-settings-btn"
+                      type="button"
+                      class="tool-settings-btn"
+                      aria-haspopup="dialog"
+                      aria-expanded="false"
+                      aria-controls="tool-settings-popover"
+                    >
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M12 4.8l1.2 1.9 2.2.4-.6 2.1 1.5 1.7-1.5 1.7.6 2.1-2.2.4-1.2 1.9-1.2-1.9-2.2-.4.6-2.1-1.5-1.7 1.5-1.7-.6-2.1 2.2-.4z"/><circle cx="12" cy="12" r="2.2"/></svg>
+                      </span>
+                      <span id="tool-settings-label">Drawing tool settings</span>
+                    </button>
+                    <div id="tool-settings-popover" class="tool-settings-popover" hidden>
+                      <label id="tool-size-control" class="tool-setting-row" for="size-input" aria-label="Brush size">
+                        <span class="tool-size-icon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><circle cx="12" cy="12" r="1.35"/></svg>
+                        </span>
+                        <span class="tool-size-label">Size</span>
+                        <input id="size-input" type="range" min="4" max="64" step="1" value="18" />
+                        <output id="size-out" for="size-input">18 px</output>
+                      </label>
+                      <label id="tool-strength-control" class="tool-setting-row" for="strength-input" aria-label="Tool strength" hidden>
+                        <span class="tool-size-icon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24"><path d="M4 14.5c1.8-2 3.7-3 5.6-3 2.4 0 3.6 2 5.8 2 1.5 0 2.9-.7 4.6-2.2"/><path d="M6 9.6c1.2-1.4 2.5-2.1 3.9-2.1 1.6 0 2.6 1 3.8 1"/></svg>
+                        </span>
+                        <span class="tool-size-label">Strength</span>
+                        <input id="strength-input" type="range" min="0.05" max="1" step="0.01" value="0.7" />
+                        <output id="strength-out" for="strength-input">0.70</output>
+                      </label>
+                      <label id="tool-density-control" class="tool-setting-row" for="density-input" aria-label="Spray density" hidden>
+                        <span class="tool-size-icon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24"><circle cx="7.2" cy="9" r="1.1"/><circle cx="11.4" cy="6.8" r="1"/><circle cx="15.9" cy="9.6" r="1.15"/><circle cx="9.7" cy="13.1" r="1"/><circle cx="14.2" cy="14.6" r="1.35"/><circle cx="7.8" cy="16.4" r="1.15"/></svg>
+                        </span>
+                        <span class="tool-size-label">Density</span>
+                        <input id="density-input" type="range" min="2" max="40" step="1" value="18" />
+                        <output id="density-out" for="density-input">18</output>
+                      </label>
+                    </div>
+                  </div>
+                  <span
+                    class="toolbar-help toolbar-shortcuts-help"
+                    tabindex="0"
+                    aria-label="Keyboard shortcuts"
+                  >
+                    <span class="help-badge" aria-hidden="true">?</span>
+                    <span class="toolbar-help-text">Shortcuts</span>
+                    <span class="help-tooltip" role="tooltip">
+                      <span class="help-tooltip-row"><strong>1-5</strong> Select Brush, Spray, Gaussian, Line, or Erase</span>
+                      <span class="help-tooltip-row"><strong>6</strong> Select the Note tool in guitar or piano score-sheet view</span>
+                      <span class="help-tooltip-row"><strong>[</strong> or <strong>]</strong> Change brush size</span>
+                      <span class="help-tooltip-row"><strong>-</strong> or <strong>=</strong> Change strength</span>
+                      <span class="help-tooltip-row"><strong>Space</strong> Play or pause</span>
+                      <span class="help-tooltip-row"><strong>S</strong> Stop playback</span>
+                      <span class="help-tooltip-row"><strong>C</strong> Clear the drawing layer</span>
+                      <span class="help-tooltip-row"><strong>G</strong> Toggle the grid</span>
+                      <span class="help-tooltip-row"><strong>Ctrl+Z</strong> or <strong>Cmd+Z</strong> Undo the last drag</span>
+                      <span class="help-tooltip-row"><strong>Shift</strong> with Line tool: snap horizontal or vertical</span>
+                    </span>
+                  </span>
+                </div>
               </div>
 
               <div id="editor-resize-shell" class="editor-resize-shell">
                 <div class="canvas-frame">
+                  <div id="render-overlay" class="render-overlay" hidden aria-live="polite">
+                    <div class="render-overlay-card">
+                      <div class="render-overlay-head">
+                        <span class="render-spinner" aria-hidden="true"></span>
+                        <span id="render-overlay-title">Rendering audio</span>
+                      </div>
+                      <div id="render-overlay-detail" class="render-overlay-detail">Preparing synthesis</div>
+                      <div class="render-progress-track" aria-hidden="true">
+                        <div id="render-progress-bar" class="render-progress-bar"></div>
+                      </div>
+                      <div id="render-progress-text" class="render-progress-text">Working…</div>
+                    </div>
+                  </div>
                   <canvas id="spectrogram-canvas" width="1120" height="640" aria-label="Spectrogram editor canvas"></canvas>
+                </div>
+              </div>
+
+              <div class="editor-dock">
+                <div class="transport-cluster" role="toolbar" aria-label="Transport controls">
+                  <button id="play-btn" type="button" class="action-btn transport-btn primary-btn" aria-label="Play" title="Play">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M8 6.5v11l9-5.5z" fill="currentColor" stroke="none"/></svg>
+                    </span>
+                    <span class="sr-only">Play</span>
+                  </button>
+                  <button id="pause-btn" type="button" class="action-btn transport-btn" aria-label="Pause" title="Pause">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M8 6h3v12H8zM13 6h3v12h-3z" fill="currentColor" stroke="none"/></svg>
+                    </span>
+                    <span class="sr-only">Pause</span>
+                  </button>
+                  <button id="stop-btn" type="button" class="action-btn transport-btn" aria-label="Stop" title="Stop">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.4" fill="currentColor" stroke="none"/></svg>
+                    </span>
+                    <span class="sr-only">Stop</span>
+                  </button>
+                  <button id="render-btn" type="button" class="action-btn transport-btn" aria-label="Render audio" title="Render audio">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M4 13c2.2 0 2.2-4 4.4-4s2.2 8 4.4 8 2.2-10 4.4-10 2.2 6 2.2 6"/></svg>
+                    </span>
+                    <span class="sr-only">Render</span>
+                  </button>
+                </div>
+                <div class="utility-cluster" role="toolbar" aria-label="Editor actions">
+                  <button id="export-btn" type="button" class="action-btn transport-btn" aria-label="Export WAV" title="Export WAV">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M12 4v10"/><path d="M8.5 10.5L12 14l3.5-3.5"/><path d="M5 18h14"/></svg>
+                    </span>
+                    <span class="sr-only">Export WAV</span>
+                  </button>
+                  <button id="undo-btn" type="button" class="action-btn transport-btn" aria-label="Undo" title="Undo">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M9 8H5v-4"/><path d="M5 8c1.9-2.5 4.6-4 8-4 4.9 0 8 3.3 8 8s-3.1 8-8 8c-3 0-5.3-1-7.1-3"/></svg>
+                    </span>
+                    <span class="sr-only">Undo</span>
+                  </button>
+                  <button id="clear-btn" type="button" class="action-btn transport-btn danger-btn" aria-label="Clear editor" title="Clear editor">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M6 7h12"/><path d="M9 7V5.5h6V7"/><path d="M8 7l.7 10.2a1.4 1.4 0 001.4 1.3h3.8a1.4 1.4 0 001.4-1.3L16 7"/><path d="M10 10.2v5.2M14 10.2v5.2"/></svg>
+                    </span>
+                    <span class="sr-only">Clear</span>
+                  </button>
                 </div>
               </div>
 
@@ -212,129 +334,116 @@
             </div>
 
             <aside class="control-panel" aria-label="Editor controls">
-              <section class="control-card">
-                <h3>Preset</h3>
-                <label class="control-stack">
-                  <span>Load drawing preset</span>
-                  <div class="inline-row">
-                    <select id="preset-select">
-                      <option value="riser">Rising line</option>
-                      <option value="chord-bloom">Chord bloom</option>
-                      <option value="rain">Spectral rain</option>
-                      <option value="pulse-lattice">Pulse lattice</option>
+              <div class="control-column">
+                <section class="control-card preset-card">
+                  <h3>Preset</h3>
+                  <label class="control-stack">
+                    <span>Load drawing preset</span>
+                    <div class="inline-row">
+                      <select id="preset-select">
+                        <option value="riser">Rising line</option>
+                        <option value="chord-bloom">Chord bloom</option>
+                        <option value="rain">Spectral rain</option>
+                        <option value="pulse-lattice">Pulse lattice</option>
+                      </select>
+                      <button id="preset-btn" type="button" class="action-btn">Load</button>
+                    </div>
+                  </label>
+                  <label class="control-stack">
+                    <span class="label-with-help">
+                      <span>Import score file</span>
+                      <span
+                        class="hover-help"
+                        tabindex="0"
+                        aria-label="Supported score import formats"
+                        data-help="Supports MusicXML (.musicxml, .xml) and MIDI (.mid, .midi). Compressed .mxl is not supported yet."
+                      >?</span>
+                    </span>
+                    <div class="inline-row">
+                      <button id="score-import-btn" type="button" class="action-btn">Upload Score</button>
+                      <input id="score-import-input" type="file" accept=".musicxml,.xml,.mid,.midi" hidden />
+                    </div>
+                  </label>
+                </section>
+
+                <section class="control-card synthesis-card">
+                  <h3>Synthesis</h3>
+                  <label class="control-stack" for="editor-view-select">
+                    <span>Editor view</span>
+                    <select id="editor-view-select">
+                      <option value="spectrogram">Free spectrogram</option>
+                      <option value="guitar-score">Guitar score sheet</option>
+                      <option value="piano-score">Grand piano score sheet</option>
                     </select>
-                    <button id="preset-btn" type="button" class="action-btn">Load</button>
-                  </div>
-                </label>
-                <label class="control-stack">
-                  <span>Import score file</span>
-                  <div class="inline-row">
-                    <button id="score-import-btn" type="button" class="action-btn">Upload Score</button>
-                    <input id="score-import-input" type="file" accept=".musicxml,.xml,.mid,.midi" hidden />
-                  </div>
-                </label>
-                <p class="card-note">Supports MusicXML (<code>.musicxml</code>, <code>.xml</code>) and MIDI (<code>.mid</code>, <code>.midi</code>). Compressed <code>.mxl</code> is not supported yet.</p>
-              </section>
-
-              <section class="control-card">
-                <h3>Bass Line</h3>
-                <label class="control-stack">
-                  <span>Load bass-line backing</span>
-                  <div class="inline-row">
-                    <select id="bassline-select">
-                      <option value="none">Empty bass line</option>
-                      <option value="dub-foundation">Dub foundation</option>
-                      <option value="four-floor">Four on the floor</option>
-                      <option value="halfstep-wobble">Half-step wobble</option>
-                      <option value="electro-break">Electro break</option>
+                  </label>
+                  <label class="control-stack" for="render-mode-select">
+                    <span id="render-mode-label">Render mode</span>
+                    <select id="render-mode-select">
+                      <option value="geometry">Geometry coherence</option>
+                      <option value="independent">Independent oscillators</option>
+                      <option value="piano">Piano-like resonances</option>
+                      <option value="guitar">Guitar-like plucks</option>
+                      <option value="spectral">Spectral bins</option>
+                      <option value="griffin">Griffin-Lim</option>
+                      <option value="hybrid">Hybrid coherence + Griffin-Lim</option>
                     </select>
-                    <button id="bassline-btn" type="button" class="action-btn">Load</button>
-                  </div>
-                </label>
-                <label class="control-stack">
-                  <span>Bass-line BPM: <output id="bassline-bpm-out">120</output></span>
-                  <input id="bassline-bpm-input" type="range" min="80" max="300" step="1" value="120" />
-                </label>
-                <button id="clear-bassline-btn" type="button" class="action-btn">Clear Bass Line</button>
-                <p class="card-note">These presets include bass movement plus kick, snare, and hat-like transients. In score-sheet mode, this BPM also sets the note-grid quantization used by the Note tool.</p>
-              </section>
+                  </label>
+                  <label class="control-stack">
+                    <span>Duration: <output id="duration-out">6.0 s</output></span>
+                    <input id="duration-input" type="range" min="1" max="900" step="0.25" value="6" />
+                  </label>
+                  <label class="control-stack">
+                    <span>Min frequency: <output id="minfreq-out">80 Hz</output></span>
+                    <input id="minfreq-input" type="range" min="30" max="500" step="5" value="80" />
+                  </label>
+                  <label class="control-stack">
+                    <span>Max frequency: <output id="maxfreq-out">3200 Hz</output></span>
+                    <input id="maxfreq-input" type="range" min="1200" max="8000" step="50" value="3200" />
+                  </label>
+                  <label class="control-stack">
+                    <span>Playback gain: <output id="gain-out">0.65</output></span>
+                    <input id="gain-input" type="range" min="0.1" max="1" step="0.01" value="0.65" />
+                  </label>
+                  <label class="check-row">
+                    <input id="loop-toggle" type="checkbox" />
+                    <span>Loop playback</span>
+                  </label>
+                  <label class="check-row">
+                    <input id="grid-toggle" type="checkbox" checked />
+                    <span>Show grid</span>
+                  </label>
+                  <label class="check-row">
+                    <input id="phase-diagnostics-toggle" type="checkbox" />
+                    <span>Phase diagnostics</span>
+                  </label>
+                  <p id="render-mode-description" class="card-note">Tracks continuous painted structures as coherent oscillators with inferred physical phase behavior.</p>
+                </section>
+              </div>
 
-              <section class="control-card">
-                <h3>Synthesis</h3>
-                <label class="control-stack" for="editor-view-select">
-                  <span>Editor view</span>
-                  <select id="editor-view-select">
-                    <option value="spectrogram">Free spectrogram</option>
-                    <option value="guitar-score">Guitar score sheet</option>
-                    <option value="piano-score">Grand piano score sheet</option>
-                  </select>
-                </label>
-                <label class="control-stack" for="render-mode-select">
-                  <span id="render-mode-label">Render mode</span>
-                  <select id="render-mode-select">
-                    <option value="geometry">Geometry coherence</option>
-                    <option value="independent">Independent oscillators</option>
-                    <option value="piano">Piano-like resonances</option>
-                    <option value="guitar">Guitar-like plucks</option>
-                    <option value="spectral">Spectral bins</option>
-                    <option value="griffin">Griffin-Lim</option>
-                    <option value="hybrid">Hybrid coherence + Griffin-Lim</option>
-                  </select>
-                </label>
-                <label class="control-stack">
-                  <span>Duration: <output id="duration-out">6.0 s</output></span>
-                  <input id="duration-input" type="range" min="1" max="900" step="0.25" value="6" />
-                </label>
-                <label class="control-stack">
-                  <span>Min frequency: <output id="minfreq-out">80 Hz</output></span>
-                  <input id="minfreq-input" type="range" min="30" max="500" step="5" value="80" />
-                </label>
-                <label class="control-stack">
-                  <span>Max frequency: <output id="maxfreq-out">3200 Hz</output></span>
-                  <input id="maxfreq-input" type="range" min="1200" max="8000" step="50" value="3200" />
-                </label>
-                <label class="control-stack">
-                  <span>Playback gain: <output id="gain-out">0.65</output></span>
-                  <input id="gain-input" type="range" min="0.1" max="1" step="0.01" value="0.65" />
-                </label>
-                <label class="check-row">
-                  <input id="loop-toggle" type="checkbox" />
-                  <span>Loop playback</span>
-                </label>
-                <label class="check-row">
-                  <input id="grid-toggle" type="checkbox" checked />
-                  <span>Show grid</span>
-                </label>
-                <label class="check-row">
-                  <input id="phase-diagnostics-toggle" type="checkbox" />
-                  <span>Phase diagnostics</span>
-                </label>
-                <p id="render-mode-description" class="card-note">Tracks continuous painted structures as coherent oscillators with inferred physical phase behavior.</p>
-              </section>
-
-              <section class="control-card">
-                <h3>Brush</h3>
-                <label class="control-stack">
-                  <span>Size: <output id="size-out">18 px</output></span>
-                  <input id="size-input" type="range" min="4" max="64" step="1" value="18" />
-                </label>
-                <label class="control-stack">
-                  <span>Strength: <output id="strength-out">0.70</output></span>
-                  <input id="strength-input" type="range" min="0.05" max="1" step="0.01" value="0.7" />
-                </label>
-                <label class="control-stack">
-                  <span>Spray density: <output id="density-out">18</output></span>
-                  <input id="density-input" type="range" min="2" max="40" step="1" value="18" />
-                </label>
-              </section>
-
-              <section class="control-card shortcuts-card">
-                <h3>Shortcuts</h3>
-                <p><code>1..5</code> tool, <code>6</code> snapped note tool in score-sheet mode, <code>[</code>/<code>]</code> size, <code>-</code>/<code>=</code> strength</p>
-                <p><code>Space</code> play/pause, <code>S</code> stop, <code>C</code> clear, <code>G</code> grid</p>
-                <p><code>Ctrl+Z</code> / <code>Cmd+Z</code> undo the last mouse drag</p>
-                <p><code>Shift</code> while using line snaps to horizontal or vertical</p>
-              </section>
+              <div class="control-column">
+                <section class="control-card bassline-card">
+                  <h3>Bass Line</h3>
+                  <label class="control-stack">
+                    <span>Load bass-line backing</span>
+                    <div class="inline-row">
+                      <select id="bassline-select">
+                        <option value="none">Empty bass line</option>
+                        <option value="dub-foundation">Dub foundation</option>
+                        <option value="four-floor">Four on the floor</option>
+                        <option value="halfstep-wobble">Half-step wobble</option>
+                        <option value="electro-break">Electro break</option>
+                      </select>
+                      <button id="bassline-btn" type="button" class="action-btn">Load</button>
+                    </div>
+                  </label>
+                  <label class="control-stack">
+                    <span>Bass-line BPM: <output id="bassline-bpm-out">120</output></span>
+                    <input id="bassline-bpm-input" type="range" min="80" max="300" step="1" value="120" />
+                  </label>
+                  <button id="clear-bassline-btn" type="button" class="action-btn">Clear Bass Line</button>
+                  <p class="card-note">These presets include bass movement plus kick, snare, and hat-like transients. In score-sheet mode, this BPM also sets the note-grid quantization used by the Note tool.</p>
+                </section>
+              </div>
             </aside>
           </section>
 

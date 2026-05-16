@@ -36,6 +36,8 @@
     const STFT_HOP = 128;
     const MIN_VIEW_COLS = 24;
     const MAX_UNDO_STEPS = 16;
+    const RENDER_YIELD_INTERVAL_MS = 28;
+    const RENDER_MIX_CHUNK_SIZE = 131072;
     const DEFAULT_GUITAR_PLUCK_POSITION = 0.19;
     const DEFAULT_GUITAR_BODY_RESONANCE = 0.92;
     const DEFAULT_PIANO_HAMMER_HARDNESS = 0.84;
@@ -75,6 +77,11 @@
     const timelineTrack = document.getElementById("timeline-track");
     const timelineThumb = document.getElementById("timeline-thumb");
     const timelineInput = document.getElementById("timeline-input");
+    const renderOverlay = document.getElementById("render-overlay");
+    const renderOverlayTitle = document.getElementById("render-overlay-title");
+    const renderOverlayDetail = document.getElementById("render-overlay-detail");
+    const renderProgressBar = document.getElementById("render-progress-bar");
+    const renderProgressText = document.getElementById("render-progress-text");
     const toolButtons = Array.from(document.querySelectorAll("[data-tool]"));
 
     const durationInput = document.getElementById("duration-input");
@@ -84,6 +91,13 @@
     const sizeInput = document.getElementById("size-input");
     const strengthInput = document.getElementById("strength-input");
     const densityInput = document.getElementById("density-input");
+    const toolSettingsWrap = document.getElementById("tool-settings-wrap");
+    const toolSettingsButton = document.getElementById("tool-settings-btn");
+    const toolSettingsLabel = document.getElementById("tool-settings-label");
+    const toolSettingsPopover = document.getElementById("tool-settings-popover");
+    const toolSizeControl = document.getElementById("tool-size-control");
+    const toolStrengthControl = document.getElementById("tool-strength-control");
+    const toolDensityControl = document.getElementById("tool-density-control");
     const guitarPluckInput = document.getElementById("guitar-pluck-input");
     const guitarBodyInput = document.getElementById("guitar-body-input");
     const pianoHammerInput = document.getElementById("piano-hammer-input");
@@ -154,6 +168,8 @@
       dirty: true,
       renderedBuffer: null,
       renderedWav: null,
+      renderPromise: null,
+      renderOverlayHideTimer: 0,
       renderToken: 0,
       isPlaying: false,
       isPaused: false,
@@ -187,6 +203,7 @@
       undoStack: [],
       pendingUndoSnapshot: null,
       pendingUndoVersion: -1,
+      toolSettingsOpen: false,
       freeMinFreq: Number(minFreqInput.value),
       freeMaxFreq: Number(maxFreqInput.value)
     };
@@ -304,6 +321,50 @@
     return Number(densityInput.value);
   }
 
+  function toolSettingsTitle() {
+    return "Drawing tool settings";
+  }
+
+  function setToolSettingsOpen(open) {
+    const canOpen = Boolean(toolSettingsWrap && !toolSettingsWrap.hidden && toolSettingsPopover && toolSettingsButton);
+    state.toolSettingsOpen = Boolean(open && canOpen);
+    if (toolSettingsPopover) {
+      toolSettingsPopover.hidden = !state.toolSettingsOpen;
+    }
+    if (toolSettingsButton) {
+      toolSettingsButton.setAttribute("aria-expanded", state.toolSettingsOpen ? "true" : "false");
+    }
+  }
+
+  function updateToolParameterVisibility() {
+    const showSize = state.tool !== "note";
+    const showStrength = ["brush", "spray", "gaussian", "erase"].includes(state.tool);
+    const showDensity = state.tool === "spray";
+    const showAny = showSize || showStrength || showDensity;
+
+    if (toolSettingsWrap) {
+      toolSettingsWrap.hidden = !showAny;
+    }
+    if (toolSettingsLabel) {
+      toolSettingsLabel.textContent = toolSettingsTitle();
+    }
+
+    if (toolSizeControl) {
+      toolSizeControl.hidden = !showSize;
+    }
+    if (toolStrengthControl) {
+      toolStrengthControl.hidden = !showStrength;
+    }
+    if (toolDensityControl) {
+      toolDensityControl.hidden = !showDensity;
+    }
+    if (!showAny) {
+      setToolSettingsOpen(false);
+    } else if (toolSettingsPopover) {
+      toolSettingsPopover.hidden = !state.toolSettingsOpen;
+    }
+  }
+
   function guitarPluckPosition() {
     return guitarPluckInput ? Number(guitarPluckInput.value) / 100 : DEFAULT_GUITAR_PLUCK_POSITION;
   }
@@ -418,7 +479,7 @@
     if (name === "electro-break") {
       return 132;
     }
-    return 132;
+    return 120;
   }
 
   function isReloadableBasslinePreset(name) {
@@ -483,6 +544,68 @@
 
   function setStatus(message) {
     statusText.textContent = message;
+  }
+
+  function yieldToBrowser() {
+    return new Promise((resolve) => window.requestAnimationFrame(resolve));
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  function createRenderYieldController() {
+    let lastYieldAt = performance.now();
+    return async function maybeYield() {
+      const now = performance.now();
+      if (now - lastYieldAt < RENDER_YIELD_INTERVAL_MS) {
+        return false;
+      }
+      lastYieldAt = now;
+      await yieldToBrowser();
+      return true;
+    };
+  }
+
+  function shouldUseCooperativeRender(totalSamples, noteCount = state.scoreEvents.length) {
+    return (
+      totalSamples > RENDER_SAMPLE_RATE * 12
+      || noteCount > 180
+      || state.renderMode === "griffin"
+      || state.renderMode === "hybrid"
+    );
+  }
+
+  function setRenderOverlay(active, options = {}) {
+    if (!renderOverlay || !renderProgressBar || !renderProgressText) {
+      return;
+    }
+
+    if (!active) {
+      renderOverlay.hidden = true;
+      renderProgressBar.classList.remove("is-indeterminate");
+      renderProgressBar.style.width = "0%";
+      return;
+    }
+
+    renderOverlay.hidden = false;
+    if (renderOverlayTitle) {
+      renderOverlayTitle.textContent = options.title || "Rendering audio";
+    }
+    if (renderOverlayDetail) {
+      renderOverlayDetail.textContent = options.detail || "Preparing synthesis";
+    }
+
+    if (typeof options.progress === "number") {
+      const progress = clamp(options.progress, 0, 1);
+      renderProgressBar.classList.remove("is-indeterminate");
+      renderProgressBar.style.width = `${Math.round(progress * 100)}%`;
+      renderProgressText.textContent = options.progressText || `${Math.round(progress * 100)}%`;
+    } else {
+      renderProgressBar.classList.add("is-indeterminate");
+      renderProgressBar.style.width = "42%";
+      renderProgressText.textContent = options.progressText || "Working…";
+    }
   }
 
   function trackColCount() {
@@ -846,6 +969,18 @@
     if (loopToggle) {
       loopToggle.checked = state.loopPlayback;
     }
+    if (playButton) {
+      playButton.classList.toggle("is-engaged", state.isPlaying && !state.isPaused);
+    }
+    if (pauseButton) {
+      pauseButton.classList.toggle("is-engaged", state.isPaused);
+    }
+    if (renderButton) {
+      renderButton.classList.toggle("is-engaged", Boolean(state.renderPromise));
+    }
+    if (stopButton) {
+      stopButton.classList.toggle("is-engaged", !state.isPlaying && !state.isPaused && state.playheadRatio <= 0);
+    }
     const noteToolButton = toolButtons.find((button) => button.dataset.tool === "note");
     if (noteToolButton) {
       noteToolButton.hidden = !isScoreNoteToolAvailable();
@@ -854,6 +989,7 @@
         state.tool = "brush";
       }
     }
+    updateToolParameterVisibility();
     for (const button of toolButtons) {
       button.classList.toggle("is-active", button.dataset.tool === state.tool);
     }
@@ -1661,6 +1797,7 @@
     if (statusMessage) {
       setStatus(statusMessage);
     }
+    updateOutputs();
     renderCanvas();
   }
 
@@ -1686,6 +1823,7 @@
       state.rafId = 0;
     }
     setStatus(`Paused at ${offset.toFixed(2)} s. Drag the playhead to shift the current time slice.`);
+    updateOutputs();
     renderCanvas();
   }
 
@@ -1720,20 +1858,26 @@
     return Math.pow(value, 1.45) * tilt;
   }
 
-  function normalizeAudioData(output) {
+  async function normalizeAudioData(output, maybeYield) {
     let peak = 0;
     for (let i = 0; i < output.length; i += 1) {
       peak = Math.max(peak, Math.abs(output[i]));
+      if (maybeYield && i % RENDER_MIX_CHUNK_SIZE === 0 && i > 0) {
+        await maybeYield();
+      }
     }
     if (peak > 0) {
       const scale = 0.92 / peak;
       for (let i = 0; i < output.length; i += 1) {
         output[i] *= scale;
+        if (maybeYield && i % RENDER_MIX_CHUNK_SIZE === 0 && i > 0) {
+          await maybeYield();
+        }
       }
     }
   }
 
-  function applyEdgeFade(output) {
+  async function applyEdgeFade(output, maybeYield) {
     const fadeInSamples = Math.min(Math.floor(RENDER_SAMPLE_RATE * 0.02), output.length);
     const fadeOutSamples = Math.min(Math.floor(RENDER_SAMPLE_RATE * 0.08), output.length);
     for (let i = 0; i < fadeInSamples; i += 1) {
@@ -1742,6 +1886,9 @@
     for (let i = 0; i < fadeOutSamples; i += 1) {
       const idx = output.length - 1 - i;
       output[idx] *= i / Math.max(1, fadeOutSamples - 1);
+    }
+    if (maybeYield) {
+      await maybeYield();
     }
   }
 
@@ -3219,17 +3366,22 @@
     }
   }
 
-  function buildScoreEventAudioData(totalSamples, renderMode = state.renderMode) {
+  async function buildScoreEventAudioData(totalSamples, renderMode = state.renderMode, options = {}) {
     const output = new Float32Array(totalSamples);
     if (!state.scoreEvents.length) {
       return output;
     }
+    const { onProgress, progressStart = 0, progressEnd = 1 } = options;
+    const maybeYield = shouldUseCooperativeRender(totalSamples, state.scoreEvents.length)
+      ? createRenderYieldController()
+      : null;
 
     function sampleIndexAt(seconds) {
       return clamp(Math.floor(seconds * RENDER_SAMPLE_RATE), 0, Math.max(0, totalSamples - 1));
     }
 
-    for (const note of state.scoreEvents) {
+    for (let noteIndex = 0; noteIndex < state.scoreEvents.length; noteIndex += 1) {
+      const note = state.scoreEvents[noteIndex];
       const startSample = sampleIndexAt(note.startSec);
       const duration = Math.max(0.02, note.durationSec);
       const sampleLength = Math.min(totalSamples - startSample, Math.ceil(duration * RENDER_SAMPLE_RATE));
@@ -3262,6 +3414,15 @@
         default:
           addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq);
           break;
+      }
+
+      if (maybeYield && await maybeYield()) {
+        const noteFraction = (noteIndex + 1) / Math.max(1, state.scoreEvents.length);
+        onProgress?.(
+          lerp(progressStart, progressEnd, noteFraction),
+          `Synthesizing score notes ${noteIndex + 1}/${state.scoreEvents.length}`,
+          `${Math.round(noteFraction * 100)}% of score notes`
+        );
       }
     }
 
@@ -3605,7 +3766,7 @@
     return phases;
   }
 
-  function reconstructFromMagnitudes(targetMagnitudes, totalSamples, iterations, phaseFrames) {
+  async function reconstructFromMagnitudes(targetMagnitudes, totalSamples, iterations, phaseFrames, onProgress) {
     const plan = getStftPlan();
     const frameCount = targetMagnitudes.length;
     let currentPhases = phaseFrames || deterministicPhaseFrames(frameCount, plan);
@@ -3641,6 +3802,10 @@
         nextPhases[frame] = phaseFrame;
       }
       currentPhases = nextPhases;
+      if (onProgress) {
+        onProgress(iteration + 1, iterations);
+        await yieldToBrowser();
+      }
     }
 
     const finalRealFrames = new Array(frameCount);
@@ -3661,18 +3826,19 @@
     return inverseStft(finalRealFrames, finalImagFrames, totalSamples, plan);
   }
 
-  function buildGriffinLimAudioData(analysis, totalSamples, options = {}) {
+  async function buildGriffinLimAudioData(analysis, totalSamples, options = {}) {
     const targetMagnitudes = buildTargetMagnitudeSpectrogram(totalSamples);
     const plan = getStftPlan();
     const frameCount = targetMagnitudes.length;
     const phaseSeed = options.phaseSeedSamples
       ? phaseFramesFromSeed(options.phaseSeedSamples, totalSamples, plan)
       : deterministicPhaseFrames(frameCount, plan);
-    const samples = reconstructFromMagnitudes(
+    const samples = await reconstructFromMagnitudes(
       targetMagnitudes,
       totalSamples,
       options.iterations || GRIFFIN_LIM_ITERATIONS,
-      phaseSeed
+      phaseSeed,
+      options.onProgress
     );
     return {
       samples,
@@ -3681,12 +3847,21 @@
     };
   }
 
-  function buildHybridAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
+  async function buildHybridAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis), onProgress) {
     const geometry = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
-    const griffin = buildGriffinLimAudioData(analysis, totalSamples, {
+    if (onProgress) {
+      onProgress(0.1, "Geometry seed ready");
+      await yieldToBrowser();
+    }
+    const griffin = await buildGriffinLimAudioData(analysis, totalSamples, {
       iterations: HYBRID_GRIFFIN_LIM_ITERATIONS,
       phaseSeedSamples: geometry.samples,
-      tracks
+      tracks,
+      onProgress: (iteration, totalIterations) => {
+        if (onProgress) {
+          onProgress(iteration / totalIterations, `Hybrid refinement ${iteration}/${totalIterations}`);
+        }
+      }
     });
     return {
       samples: griffin.samples,
@@ -3695,12 +3870,28 @@
     };
   }
 
-  function buildAudioData() {
+  async function buildAudioData(options = {}) {
+    const { onProgress } = options;
+    const hasScoreEvents = state.scoreEvents.length > 0;
+    const scoreProgressStart = hasScoreEvents ? 0.08 : 0.15;
+    const scoreProgressEnd = hasScoreEvents ? 0.8 : 0.15;
+    const rendererProgressStart = hasScoreEvents ? 0.83 : 0.34;
+    const rendererProgressEnd = 0.94;
+
+    onProgress?.(0.04, "Analyzing drawing");
     const analysis = analyzeColumns();
     const totalSamples = Math.max(1, Math.floor(durationSeconds() * RENDER_SAMPLE_RATE));
     state.playDurationSeconds = durationSeconds();
+    onProgress?.(0.07, "Preparing score and bass layers");
     const bass = buildBassEventAudioData(totalSamples);
-    const score = buildScoreEventAudioData(totalSamples, state.renderMode);
+    const maybeYield = shouldUseCooperativeRender(totalSamples, state.scoreEvents.length)
+      ? createRenderYieldController()
+      : null;
+    const score = await buildScoreEventAudioData(totalSamples, state.renderMode, {
+      onProgress,
+      progressStart: scoreProgressStart,
+      progressEnd: scoreProgressEnd
+    });
     const output = new Float32Array(totalSamples);
     let tracks = extractDrawVoiceTracks(analysis);
     let iterations = 0;
@@ -3708,36 +3899,60 @@
 
     switch (state.renderMode) {
       case "independent":
+        onProgress?.(rendererProgressStart, "Synthesizing independent oscillators");
         drawRender = buildIndependentOscillatorAudioData(analysis, totalSamples, tracks);
         break;
       case "piano":
+        onProgress?.(rendererProgressStart, "Synthesizing piano-like resonances");
         drawRender = buildPianoLikeAudioData(analysis, totalSamples, tracks);
         break;
       case "guitar":
+        onProgress?.(rendererProgressStart, "Synthesizing guitar-like plucks");
         drawRender = buildGuitarLikeAudioData(analysis, totalSamples, tracks);
         break;
       case "spectral":
+        onProgress?.(rendererProgressStart, "Synthesizing spectral bins");
         drawRender = buildSpectralBinAudioData(analysis, totalSamples);
         break;
       case "griffin":
-        drawRender = buildGriffinLimAudioData(analysis, totalSamples, { tracks });
+        onProgress?.(rendererProgressStart, "Initializing Griffin-Lim");
+        drawRender = await buildGriffinLimAudioData(analysis, totalSamples, {
+          tracks,
+          onProgress: (iteration, totalIterations) => {
+            onProgress?.(
+              lerp(rendererProgressStart, rendererProgressEnd, iteration / totalIterations),
+              `Griffin-Lim iteration ${iteration}/${totalIterations}`
+            );
+          }
+        });
         break;
       case "hybrid":
-        drawRender = buildHybridAudioData(analysis, totalSamples, tracks);
+        onProgress?.(rendererProgressStart, "Building hybrid seed");
+        drawRender = await buildHybridAudioData(analysis, totalSamples, tracks, (fraction, detail) => {
+          onProgress?.(lerp(rendererProgressStart, rendererProgressEnd, fraction), detail);
+        });
         break;
       case "geometry":
       default:
+        onProgress?.(rendererProgressStart, "Synthesizing geometry coherence");
         drawRender = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
         break;
     }
 
     iterations = drawRender.iterations || 0;
+    onProgress?.(0.94, "Mixing and normalizing");
     for (let i = 0; i < output.length; i += 1) {
       output[i] = drawRender.samples[i] + score[i] + bass[i];
+      if (maybeYield && i % RENDER_MIX_CHUNK_SIZE === 0 && i > 0) {
+        onProgress?.(lerp(0.94, 0.975, i / Math.max(1, output.length - 1)), "Mixing and normalizing");
+        await maybeYield();
+      }
     }
 
-    normalizeAudioData(output);
-    applyEdgeFade(output);
+    onProgress?.(0.978, "Normalizing output");
+    await normalizeAudioData(output, maybeYield);
+    onProgress?.(0.992, "Applying output fade");
+    await applyEdgeFade(output, maybeYield);
     const scoreModeLabel = state.scoreEvents.length ? `${currentScoreProfile().label} note events` : "";
     const hasDrawTracks = tracks.length > 0;
     return {
@@ -3789,49 +4004,106 @@
     if (!state.dirty && state.renderedBuffer) {
       return state.renderedBuffer;
     }
-    const token = ++state.renderToken;
-    setStatus(`Rendering ${reason} using ${renderModeName(state.renderMode).toLowerCase()}...`);
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-
-    const startedAt = performance.now();
-    const renderResult = buildAudioData();
-    const elapsedMs = performance.now() - startedAt;
-    if (token !== state.renderToken) {
-      return null;
+    if (state.renderPromise) {
+      return state.renderPromise;
     }
+    if (state.renderOverlayHideTimer) {
+      window.clearTimeout(state.renderOverlayHideTimer);
+      state.renderOverlayHideTimer = 0;
+    }
+    state.renderPromise = (async () => {
+      const token = ++state.renderToken;
+      const overlayStartedAt = performance.now();
+      setStatus(`Rendering ${reason} using ${renderModeName(state.renderMode).toLowerCase()}...`);
+      setRenderOverlay(true, {
+        title: "Rendering audio",
+        detail: `Preparing ${renderModeName(state.renderMode).toLowerCase()}`,
+        progress: null
+      });
+      await yieldToBrowser();
 
-    const audioContext = createAudioContext();
-    const samples = renderResult.samples;
-    const buffer = audioContext.createBuffer(1, samples.length, RENDER_SAMPLE_RATE);
-    buffer.copyToChannel(samples, 0, 0);
-    state.renderedBuffer = buffer;
-    state.playDurationSeconds = buffer.duration;
-    state.latestRenderInfo = {
-      mode: renderResult.modeLabel,
-      iterations: renderResult.iterations || 0,
-      elapsedMs,
-      sampleCount: samples.length
-    };
-    state.diagnosticsCache = {
-      version: state.dataVersion,
-      snapshot: {
-        analysis: renderResult.analysis,
-        tracks: renderResult.tracks
+      try {
+        const startedAt = performance.now();
+        const renderResult = await buildAudioData({
+          onProgress: (progress, detail, progressText) => {
+            if (token !== state.renderToken) {
+              return;
+            }
+            setRenderOverlay(true, {
+              title: "Rendering audio",
+              detail,
+              progress,
+              progressText
+            });
+          }
+        });
+        const elapsedMs = performance.now() - startedAt;
+        if (token !== state.renderToken) {
+          return null;
+        }
+
+        const audioContext = createAudioContext();
+        const samples = renderResult.samples;
+        setRenderOverlay(true, {
+          title: "Rendering audio",
+          detail: "Creating playback buffer",
+          progress: 0.98
+        });
+        const buffer = audioContext.createBuffer(1, samples.length, RENDER_SAMPLE_RATE);
+        buffer.copyToChannel(samples, 0, 0);
+        setRenderOverlay(true, {
+          title: "Rendering audio",
+          detail: "Render complete",
+          progress: 1
+        });
+        await yieldToBrowser();
+        state.renderedBuffer = buffer;
+        state.playDurationSeconds = buffer.duration;
+        state.latestRenderInfo = {
+          mode: renderResult.modeLabel,
+          iterations: renderResult.iterations || 0,
+          elapsedMs,
+          sampleCount: samples.length
+        };
+        state.diagnosticsCache = {
+          version: state.dataVersion,
+          snapshot: {
+            analysis: renderResult.analysis,
+            tracks: renderResult.tracks
+          }
+        };
+        if (state.isPaused) {
+          state.pausedOffsetSeconds = clamp(state.pausedOffsetSeconds, 0, buffer.duration);
+          state.playheadRatio = buffer.duration > 0 ? state.pausedOffsetSeconds / buffer.duration : 0;
+        }
+        state.renderedWav = encodeWav(samples, RENDER_SAMPLE_RATE);
+        state.dirty = false;
+        const modeSummary = renderResult.modeLabel;
+        const iterationSummary = renderResult.iterations > 0 ? ` · ${renderResult.iterations} iterations` : "";
+        setStatus(`Rendered using: ${modeSummary} · ${elapsedMs.toFixed(1)} ms · ${samples.length} samples${iterationSummary}`);
+        return buffer;
+      } finally {
+        const visibleMs = performance.now() - overlayStartedAt;
+        if (visibleMs < 420) {
+          state.renderOverlayHideTimer = window.setTimeout(() => {
+            if (state.renderToken === token && !state.renderPromise) {
+              setRenderOverlay(false);
+            }
+            state.renderOverlayHideTimer = 0;
+          }, 420 - visibleMs);
+        } else {
+          setRenderOverlay(false);
+        }
+        state.renderPromise = null;
       }
-    };
-    if (state.isPaused) {
-      state.pausedOffsetSeconds = clamp(state.pausedOffsetSeconds, 0, buffer.duration);
-      state.playheadRatio = buffer.duration > 0 ? state.pausedOffsetSeconds / buffer.duration : 0;
-    }
-    state.renderedWav = encodeWav(samples, RENDER_SAMPLE_RATE);
-    state.dirty = false;
-    const modeSummary = renderResult.modeLabel;
-    const iterationSummary = renderResult.iterations > 0 ? ` · ${renderResult.iterations} iterations` : "";
-    setStatus(`Rendered using: ${modeSummary} · ${elapsedMs.toFixed(1)} ms · ${samples.length} samples${iterationSummary}`);
-    return buffer;
+    })();
+    return state.renderPromise;
   }
 
   async function playAudio() {
+    if (state.isPlaying && !state.isPaused) {
+      return;
+    }
     const audioContext = createAudioContext();
     await audioContext.resume();
     const buffer = await renderIfNeeded("audio");
@@ -3865,6 +4137,7 @@
     followPlaybackViewport({ allowBackward: true });
     source.start(0, startOffset);
     setStatus(state.loopPlayback ? "Playing rendered audio in loop mode." : "Playing rendered audio.");
+    updateOutputs();
     renderCanvas();
     state.rafId = requestAnimationFrame(animatePlayhead);
   }
@@ -3906,6 +4179,7 @@
       tool = "brush";
     }
     state.tool = tool;
+    updateToolParameterVisibility();
     for (const button of toolButtons) {
       button.classList.toggle("is-active", button.dataset.tool === tool);
     }
@@ -4985,6 +5259,18 @@
     presetButton.addEventListener("click", () => applyPreset(presetSelect.value));
     basslineButton.addEventListener("click", () => applyBassLinePreset(basslineSelect.value));
     clearBasslineButton.addEventListener("click", clearBassLine);
+    if (toolSettingsButton) {
+      toolSettingsButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setToolSettingsOpen(!state.toolSettingsOpen);
+      });
+    }
+    if (toolSettingsPopover) {
+      toolSettingsPopover.addEventListener("pointerdown", (event) => {
+        event.stopPropagation();
+      });
+    }
 
     for (const button of toolButtons) {
       button.addEventListener("click", () => setTool(button.dataset.tool));
@@ -5000,8 +5286,20 @@
       updateOutputs();
       renderCanvas();
     });
+    window.addEventListener("pointerdown", (event) => {
+      if (!state.toolSettingsOpen || !toolSettingsWrap) {
+        return;
+      }
+      if (!toolSettingsWrap.contains(event.target)) {
+        setToolSettingsOpen(false);
+      }
+    });
 
     window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && state.toolSettingsOpen) {
+        setToolSettingsOpen(false);
+        return;
+      }
       if (event.target && /input|select|textarea|button/i.test(event.target.tagName)) {
         return;
       }
