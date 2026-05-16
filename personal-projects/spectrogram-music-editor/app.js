@@ -715,6 +715,10 @@
     ];
   }
 
+  function hasImportedScoreOverlay() {
+    return state.scoreEvents.length > 0 && isScoreSheetMode();
+  }
+
   function repaintOffscreen() {
     const pixels = pixelImage.data;
     const startCol = visibleStartCol();
@@ -939,6 +943,53 @@
     ctx.restore();
   }
 
+  function drawImportedScoreOverlay() {
+    if (!hasImportedScoreOverlay()) {
+      return;
+    }
+
+    const startVisibleCol = visibleStartCol();
+    const endVisibleCol = visibleEndCol();
+    const y0 = margins.top;
+    const h = plotHeight();
+
+    ctx.save();
+    ctx.rect(margins.left, y0, plotWidth(), h);
+    ctx.clip();
+
+    for (const note of state.scoreEvents) {
+      const startCol = colFromTime(note.startSec);
+      const endCol = Math.max(startCol + 1, colFromTime(note.startSec + note.durationSec));
+      if (endCol < startVisibleCol || startCol > endVisibleCol) {
+        continue;
+      }
+
+      const clampedStart = Math.max(startVisibleCol, startCol);
+      const clampedEnd = Math.min(endVisibleCol, endCol);
+      const x1 = margins.left + ((clampedStart - startVisibleCol) / Math.max(1, visibleColCount() - 1)) * plotWidth();
+      const x2 = margins.left + ((clampedEnd - startVisibleCol) / Math.max(1, visibleColCount() - 1)) * plotWidth();
+      const width = Math.max(2, x2 - x1);
+
+      const topFreq = midiToFreq(note.midi + 0.48);
+      const bottomFreq = midiToFreq(note.midi - 0.48);
+      const topRow = rowFromFreq(topFreq);
+      const bottomRow = rowFromFreq(bottomFreq);
+      const topY = y0 + (Math.min(topRow, bottomRow) / (GRID_ROWS - 1)) * h;
+      const bottomY = y0 + (Math.max(topRow, bottomRow) / (GRID_ROWS - 1)) * h;
+      const rectHeight = Math.max(5, bottomY - topY);
+      const rectY = (topY + bottomY) * 0.5 - rectHeight * 0.5;
+      const velocity = clamp(note.velocity || 0.78, 0.2, 1);
+
+      ctx.fillStyle = `rgba(${Math.round(102 + velocity * 64)}, ${Math.round(186 + velocity * 28)}, 255, 0.62)`;
+      ctx.strokeStyle = `rgba(${Math.round(214 + velocity * 24)}, ${Math.round(236 + velocity * 16)}, 255, 0.96)`;
+      ctx.lineWidth = 1.1;
+      ctx.fillRect(x1, rectY, width, rectHeight);
+      ctx.strokeRect(x1 + 0.5, rectY + 0.5, Math.max(1, width - 1), Math.max(1, rectHeight - 1));
+    }
+
+    ctx.restore();
+  }
+
   function drawPointerPreview() {
     if (!state.pointerInside || !state.currentPointer || state.tool === "line") {
       return;
@@ -1065,10 +1116,12 @@
     ctx.save();
     ctx.shadowColor = "rgba(79, 164, 255, 0.16)";
     ctx.shadowBlur = 24;
+    ctx.imageSmoothingEnabled = !hasImportedScoreOverlay();
     ctx.drawImage(offscreen, x, y, w, h);
     ctx.restore();
 
     drawGridAndAxes();
+    drawImportedScoreOverlay();
     drawPhaseDiagnosticsOverlay(diagnostics);
     drawPlayhead();
     drawLinePreview();
@@ -3450,6 +3503,7 @@
 
   function paintImportedScore(notes) {
     drawData.fill(0);
+    const crispScoreMode = isScoreSheetMode();
     for (const note of notes) {
       const freq = midiToFreq(note.midi);
       const startCol = colFromTime(note.startSec);
@@ -3457,17 +3511,29 @@
       const centerRow = rowFromFreq(freq);
       const velocity = clamp(note.velocity || 0.78, 0.2, 1);
       const amplitude = 0.26 + velocity * 0.34;
-      const widthRows = isScoreSheetMode() ? 2 : 1;
+      const widthRows = crispScoreMode ? 0 : 1;
 
       for (let col = startCol; col <= endCol; col += 1) {
-        const edgeBlend = col === startCol || col === endCol ? 0.64 : 1;
+        const edgeBlend = crispScoreMode
+          ? 1
+          : col === startCol || col === endCol
+            ? 0.64
+            : 1;
         for (let row = centerRow - widthRows; row <= centerRow + widthRows; row += 1) {
           const rowDistance = Math.abs(row - centerRow);
-          const rowGain = rowDistance === 0 ? 1 : rowDistance === 1 ? 0.58 : 0.3;
+          const rowGain = crispScoreMode
+            ? 1
+            : rowDistance === 0
+              ? 1
+              : rowDistance === 1
+                ? 0.58
+                : 0.3;
           setAmplitude(drawData, col, row, amplitude * edgeBlend * rowGain);
         }
       }
-      stampGaussian({ col: startCol, row: centerRow }, amplitude * 0.24, 0.38, drawData);
+      if (!crispScoreMode) {
+        stampGaussian({ col: startCol, row: centerRow }, amplitude * 0.24, 0.38, drawData);
+      }
     }
   }
 
