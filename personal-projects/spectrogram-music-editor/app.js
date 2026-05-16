@@ -717,11 +717,22 @@
 
   function repaintOffscreen() {
     const pixels = pixelImage.data;
+    const startCol = visibleStartCol();
+    const span = Math.max(1, visibleColCount() - 1);
+    const maxTrackCol = Math.max(0, trackColCount() - 1);
     for (let row = 0; row < GRID_ROWS; row += 1) {
       for (let viewCol = 0; viewCol < VIEW_COLS; viewCol += 1) {
-        const col = visibleStartCol() + viewCol;
-        const bass = col < trackColCount() ? amplitudeAt(basslineData, col, row) : 0;
-        const draw = col < trackColCount() ? amplitudeAt(drawData, col, row) : 0;
+        const viewRatio = VIEW_COLS > 1 ? viewCol / (VIEW_COLS - 1) : 0;
+        const sourceCol = clamp(startCol + viewRatio * span, 0, maxTrackCol);
+        const col0 = Math.floor(sourceCol);
+        const col1 = Math.min(maxTrackCol, col0 + 1);
+        const mix = sourceCol - col0;
+        const bass0 = amplitudeAt(basslineData, col0, row);
+        const bass1 = amplitudeAt(basslineData, col1, row);
+        const draw0 = amplitudeAt(drawData, col0, row);
+        const draw1 = amplitudeAt(drawData, col1, row);
+        const bass = lerp(bass0, bass1, mix);
+        const draw = lerp(draw0, draw1, mix);
         const [r, g, b, a] = layeredColor(bass, draw);
         const pixelRow = row;
         const pixelBase = (pixelRow * VIEW_COLS + viewCol) * 4;
