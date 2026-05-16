@@ -137,11 +137,20 @@
             </p>
             <p>
               \[
-              x(t)=\sum_k a_k(t)\sin\bigl(\phi_k(t)\bigr),
+              x(t)=\sum_k a_k(t)\sin\!\left(2\pi\int_0^t f_k(\tau)\,d\tau+\phi_{k,0}\right),
               \]
             </p>
             <p>
-              where \(a_k(t)\) is the amplitude of a partial and \(\phi_k(t)\) is its phase.
+              where \(a_k(t)\) is the amplitude of a partial, \(f_k(t)\) is its instantaneous frequency, and
+              \(\phi_{k,0}\) is an initial phase. Equivalently, one can write the same idea in terms of a running phase
+              \(\phi_k(t)\), with frequency recovered from
+            </p>
+            <p>
+              \[
+              f_k(t)=\frac{1}{2\pi}\frac{d\phi_k}{dt}.
+              \]
+            </p>
+            <p>
               The amplitudes are suggested by the drawing, but the phases are not painted explicitly. That missing phase
               information is why spectrogram inversion is interesting: many different waveforms can share a similar-looking
               magnitude image.
