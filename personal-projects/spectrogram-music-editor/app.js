@@ -38,6 +38,9 @@
     const MAX_UNDO_STEPS = 16;
     const RENDER_YIELD_INTERVAL_MS = 28;
     const RENDER_MIX_CHUNK_SIZE = 131072;
+    const PARTIAL_RENDER_CROSSFADE_SAMPLES = 192;
+    const SOUNDPAINT_PROJECT_VERSION = 1;
+    const SOUNDPAINT_SESSION_STORAGE_KEY = "soundpaint-autosave-v1";
     const DEFAULT_GUITAR_PLUCK_POSITION = 0.19;
     const DEFAULT_GUITAR_BODY_RESONANCE = 0.92;
     const DEFAULT_PIANO_HAMMER_HARDNESS = 0.84;
@@ -61,6 +64,9 @@
     const loopButton = document.getElementById("loop-btn");
     const renderButton = document.getElementById("render-btn");
     const exportButton = document.getElementById("export-btn");
+    const projectSaveButton = document.getElementById("project-save-btn");
+    const projectLoadButton = document.getElementById("project-load-btn");
+    const projectLoadInput = document.getElementById("project-load-input");
     const undoButton = document.getElementById("undo-btn");
     const clearButton = document.getElementById("clear-btn");
     const presetButton = document.getElementById("preset-btn");
@@ -174,8 +180,17 @@
       dirty: true,
       renderedBuffer: null,
       renderedWav: null,
+      lastRenderedDataVersion: -1,
+      renderCache: null,
+      dirtyRender: {
+        full: true,
+        startSample: 0,
+        endSample: 0,
+        layers: { draw: true, bass: true, score: true }
+      },
       renderPromise: null,
       renderOverlayHideTimer: 0,
+      sessionSaveTimer: 0,
       renderToken: 0,
       isPlaying: false,
       isPaused: false,
@@ -541,6 +556,161 @@
       return Math.max(2, (bounds.max - bounds.min) / 800);
     }
     return Math.log(2) / 12;
+  }
+
+  function totalRenderSamples() {
+    return Math.max(1, Math.floor(durationSeconds() * RENDER_SAMPLE_RATE));
+  }
+
+  function dirtyRangeToSamples(startSec, endSec, paddingSec = 0) {
+    const totalSamples = totalRenderSamples();
+    const start = clamp(
+      Math.floor(Math.max(0, Math.min(startSec, endSec) - paddingSec) * RENDER_SAMPLE_RATE),
+      0,
+      totalSamples
+    );
+    const end = clamp(
+      Math.ceil(Math.min(durationSeconds(), Math.max(startSec, endSec) + paddingSec) * RENDER_SAMPLE_RATE),
+      start,
+      totalSamples
+    );
+    return { start, end };
+  }
+
+  function noteRenderSpan(note, paddingSec = 0.22) {
+    const startSec = Math.max(0, note.startSec);
+    const endSec = Math.min(durationSeconds(), note.startSec + note.durationSec + paddingSec);
+    return { startSec, endSec };
+  }
+
+  function dirtyRangeFromColumns(startCol, endCol, paddingCols = 0) {
+    return {
+      startSec: timeFromCol(Math.min(startCol, endCol) - paddingCols),
+      endSec: timeFromCol(Math.max(startCol, endCol) + paddingCols)
+    };
+  }
+
+  function dirtyRangeFromPoints(from, to = from, paddingCols = brushRadiusCells() * 1.4) {
+    return dirtyRangeFromColumns(from.col, to.col, paddingCols);
+  }
+
+  function sampleRangeToColumnRange(totalSamples, startSample, endSample, paddingCols = 3) {
+    const cols = trackColCount();
+    const safeDenominator = Math.max(1, totalSamples);
+    const startCol = clamp(
+      Math.floor((Math.max(0, startSample) / safeDenominator) * cols) - paddingCols,
+      0,
+      cols - 1
+    );
+    const endCol = clamp(
+      Math.ceil((Math.max(startSample, endSample) / safeDenominator) * cols) + paddingCols,
+      startCol,
+      cols - 1
+    );
+    return { startCol, endCol };
+  }
+
+  function sampleWindowLength(startSample, endSample) {
+    return Math.max(0, endSample - startSample);
+  }
+
+  function makeRenderWindow(totalSamples, options = {}) {
+    const rangeStartSample = clamp(
+      Number.isFinite(options.rangeStartSample) ? options.rangeStartSample : 0,
+      0,
+      totalSamples
+    );
+    const rangeEndSample = clamp(
+      Number.isFinite(options.rangeEndSample) ? options.rangeEndSample : totalSamples,
+      rangeStartSample,
+      totalSamples
+    );
+    const partial = Boolean(options.targetOutput)
+      || rangeStartSample > 0
+      || rangeEndSample < totalSamples;
+    const output = partial
+      ? new Float32Array(sampleWindowLength(rangeStartSample, rangeEndSample))
+      : new Float32Array(totalSamples);
+    return {
+      output,
+      partial,
+      rangeStartSample,
+      rangeEndSample
+    };
+  }
+
+  function writeRenderSample(window, sample, value) {
+    if (window.partial) {
+      if (sample < window.rangeStartSample || sample >= window.rangeEndSample) {
+        return;
+      }
+      window.output[sample - window.rangeStartSample] += value;
+      return;
+    }
+    window.output[sample] += value;
+  }
+
+  function mixPartialRangeIntoTarget(targetOutput, partialOutput, startSample, endSample) {
+    const rangeLength = sampleWindowLength(startSample, endSample);
+    if (!targetOutput || !partialOutput || rangeLength <= 0) {
+      return targetOutput;
+    }
+    const fadeSamples = Math.min(PARTIAL_RENDER_CROSSFADE_SAMPLES, Math.floor(rangeLength * 0.5));
+    for (let i = 0; i < rangeLength; i += 1) {
+      let blend = 1;
+      if (fadeSamples > 0) {
+        if (i < fadeSamples) {
+          blend = smoothstep01(i / fadeSamples);
+        } else if (i >= rangeLength - fadeSamples) {
+          blend = smoothstep01((rangeLength - 1 - i) / fadeSamples);
+        }
+      }
+      const targetIndex = startSample + i;
+      targetOutput[targetIndex] = lerp(targetOutput[targetIndex], partialOutput[i], blend);
+    }
+    return targetOutput;
+  }
+
+  function drawLayerCanRenderIncrementally(mode) {
+    return mode === "geometry" || mode === "independent" || mode === "piano" || mode === "guitar";
+  }
+
+  function hasDrawLayerEnergy(analysis) {
+    return analysis.energy.some((value) => value > EPSILON);
+  }
+
+  function hasCurrentRenderedBuffer() {
+    if (!state.renderedBuffer) {
+      return false;
+    }
+    if (state.lastRenderedDataVersion !== state.dataVersion) {
+      return false;
+    }
+    if (state.renderCache) {
+      if (state.renderCache.totalSamples !== totalRenderSamples()) {
+        return false;
+      }
+      if (state.renderCache.renderMode !== state.renderMode) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function mergeDirtySampleRange(startSample, endSample, layers) {
+    if (state.dirtyRender.full) {
+      return;
+    }
+    if (state.dirtyRender.endSample <= state.dirtyRender.startSample) {
+      state.dirtyRender.startSample = startSample;
+      state.dirtyRender.endSample = endSample;
+    } else {
+      state.dirtyRender.startSample = Math.min(state.dirtyRender.startSample, startSample);
+      state.dirtyRender.endSample = Math.max(state.dirtyRender.endSample, endSample);
+    }
+    for (const layer of layers) {
+      state.dirtyRender.layers[layer] = true;
+    }
   }
 
   function sanitizeFrequencyRange(minValue, maxValue) {
@@ -928,6 +1098,7 @@
       trackColCount()
     );
     state.viewOffsetCol = clamp(Number(nextOffset) || 0, 0, maxViewOffset());
+    scheduleSessionProjectSave();
     updateOutputs();
     if (options.render !== false) {
       renderCanvas();
@@ -1118,21 +1289,78 @@
   }
 
   function markDirty(options = {}) {
-    const { resetFrequencyReference = true } = options;
+    const {
+      resetFrequencyReference = true,
+      full = true,
+      layers = null,
+      rangeStartSec = null,
+      rangeEndSec = null,
+      paddingSec = 0
+    } = options;
     state.dirty = true;
     state.renderedBuffer = null;
     state.renderedWav = null;
     state.dataVersion += 1;
-    state.diagnosticsCache = null;
+    const targetLayers = layers || ["draw", "bass", "score"];
+    const canIncremental = !full
+      && Boolean(state.renderCache)
+      && rangeStartSec !== null
+      && rangeEndSec !== null
+      && state.renderCache.totalSamples === totalRenderSamples()
+      && state.renderCache.renderMode === state.renderMode;
+    if (!canIncremental) {
+      state.dirtyRender = {
+        full: true,
+        startSample: 0,
+        endSample: 0,
+        layers: { draw: true, bass: true, score: true }
+      };
+      state.diagnosticsCache = null;
+    } else {
+      const range = dirtyRangeToSamples(rangeStartSec, rangeEndSec, paddingSec);
+      if (state.dirtyRender.full) {
+        state.dirtyRender = {
+          full: false,
+          startSample: range.start,
+          endSample: range.end,
+          layers: { draw: false, bass: false, score: false }
+        };
+      }
+      mergeDirtySampleRange(range.start, range.end, targetLayers);
+    }
     if (resetFrequencyReference) {
       state.frequencyZoomReference = null;
     }
+    scheduleSessionProjectSave();
   }
 
   function clearImportedScoreEvents() {
     if (state.scoreEvents.length) {
       state.scoreEvents = [];
     }
+  }
+
+  function markToolEditDirty(range, dirtyLayers) {
+    const layers = [];
+    if (dirtyLayers.draw) {
+      layers.push("draw");
+    }
+    if (dirtyLayers.bass) {
+      layers.push("bass");
+    }
+    if (dirtyLayers.score) {
+      layers.push("score");
+    }
+    if (!layers.length) {
+      return;
+    }
+    markDirty({
+      full: false,
+      layers,
+      rangeStartSec: range.startSec,
+      rangeEndSec: range.endSec,
+      paddingSec: 0.08
+    });
   }
 
   function removeScoreEventsNearPoint(point) {
@@ -1185,26 +1413,244 @@
   function addScoreNoteEvent(startPoint, endPoint) {
     const placement = quantizedScoreNotePlacement(startPoint, endPoint);
     if (!placement) {
-      return false;
+      return null;
     }
     if (placement.endSec <= placement.startSec + 0.01) {
-      return false;
+      return null;
     }
     const velocity = clamp(currentStrength() * 0.82 + 0.18, 0.18, 1);
+    const addedNote = {
+      startSec: placement.startSec,
+      durationSec: placement.endSec - placement.startSec,
+      midi: placement.midi,
+      velocity
+    };
     state.scoreEvents = mergeAdjacentNoteEvents([
       ...state.scoreEvents,
-      {
-        startSec: placement.startSec,
-        durationSec: placement.endSec - placement.startSec,
-        midi: placement.midi,
-        velocity
-      }
+      addedNote
     ]);
-    return true;
+    return addedNote;
   }
 
   function cloneEventList(events) {
     return events.map((event) => ({ ...event }));
+  }
+
+  function sparseLayerData(layer) {
+    const entries = [];
+    for (let i = 0; i < layer.length; i += 1) {
+      const value = layer[i];
+      if (value > EPSILON) {
+        entries.push(i, Number(value.toFixed(6)));
+      }
+    }
+    return entries;
+  }
+
+  function restoreSparseLayerData(layer, entries) {
+    layer.fill(0);
+    if (!Array.isArray(entries)) {
+      return;
+    }
+    for (let i = 0; i + 1 < entries.length; i += 2) {
+      const index = Number(entries[i]);
+      const value = Number(entries[i + 1]);
+      if (!Number.isFinite(index) || !Number.isFinite(value)) {
+        continue;
+      }
+      if (index < 0 || index >= layer.length) {
+        continue;
+      }
+      layer[index] = clamp(value, 0, 1);
+    }
+  }
+
+  function buildSoundpaintProject() {
+    return {
+      format: "soundpaint",
+      version: SOUNDPAINT_PROJECT_VERSION,
+      savedAt: new Date().toISOString(),
+      settings: {
+        durationSeconds: durationSeconds(),
+        gain: Number(gainInput.value),
+        brushSize: Number(sizeInput.value),
+        strength: Number(strengthInput.value),
+        density: Number(densityInput.value),
+        basslineBpm: basslineBpm(),
+        editorView: state.editorView,
+        renderMode: state.renderMode,
+        frequencyAxis: frequencyAxisMode(),
+        showPhaseDiagnostics: state.showPhaseDiagnostics,
+        loopPlayback: state.loopPlayback,
+        currentBasslinePreset: state.currentBasslinePreset,
+        freeMinFreq: state.freeMinFreq,
+        freeMaxFreq: state.freeMaxFreq,
+        scoreViewFreqs: {
+          "guitar-score": { ...state.scoreViewFreqs["guitar-score"] },
+          "piano-score": { ...state.scoreViewFreqs["piano-score"] }
+        },
+        viewOffsetCol: state.viewOffsetCol,
+        viewColSpan: state.viewColSpan,
+        showGrid: Boolean(gridToggle && gridToggle.checked),
+        tool: state.tool
+      },
+      layers: {
+        drawData: sparseLayerData(drawData),
+        basslineData: sparseLayerData(basslineData)
+      },
+      events: {
+        bassEvents: cloneEventList(bassEvents),
+        scoreEvents: cloneEventList(state.scoreEvents)
+      }
+    };
+  }
+
+  function downloadTextFile(filename, text, mimeType = "application/json") {
+    const blob = new Blob([text], { type: mimeType });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }
+
+  function persistSessionProjectNow() {
+    try {
+      window.sessionStorage.setItem(
+        SOUNDPAINT_SESSION_STORAGE_KEY,
+        JSON.stringify(buildSoundpaintProject())
+      );
+    } catch (error) {
+      // Ignore storage quota and privacy-mode failures.
+    }
+  }
+
+  function scheduleSessionProjectSave() {
+    if (state.sessionSaveTimer) {
+      window.clearTimeout(state.sessionSaveTimer);
+    }
+    state.sessionSaveTimer = window.setTimeout(() => {
+      state.sessionSaveTimer = 0;
+      persistSessionProjectNow();
+    }, 180);
+  }
+
+  function restoreSessionProjectIfAvailable() {
+    try {
+      const raw = window.sessionStorage.getItem(SOUNDPAINT_SESSION_STORAGE_KEY);
+      if (!raw) {
+        return false;
+      }
+      applySoundpaintProject(JSON.parse(raw), { statusMessage: "Restored project from this tab." });
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function saveSoundpaintProject() {
+    const project = buildSoundpaintProject();
+    downloadTextFile("soundpaint.json", JSON.stringify(project, null, 2));
+    setStatus("Project saved as soundpaint.json.");
+  }
+
+  function applySoundpaintProject(project, options = {}) {
+    if (!project || project.format !== "soundpaint") {
+      throw new Error("Not a valid soundpaint project file.");
+    }
+    const settings = project.settings || {};
+    const layers = project.layers || {};
+    const events = project.events || {};
+
+    const nextDuration = clamp(
+      Number(settings.durationSeconds) || durationSeconds(),
+      Number(durationInput.min),
+      Number(durationInput.max)
+    );
+    durationInput.value = String(nextDuration);
+    gainInput.value = String(clamp(Number(settings.gain) || Number(gainInput.value), Number(gainInput.min), Number(gainInput.max)));
+    sizeInput.value = String(clamp(Number(settings.brushSize) || Number(sizeInput.value), Number(sizeInput.min), Number(sizeInput.max)));
+    strengthInput.value = String(clamp(Number(settings.strength) || Number(strengthInput.value), Number(strengthInput.min), Number(strengthInput.max)));
+    densityInput.value = String(clamp(Number(settings.density) || Number(densityInput.value), Number(densityInput.min), Number(densityInput.max)));
+    basslineBpmInput.value = String(clamp(Number(settings.basslineBpm) || basslineBpm(), Number(basslineBpmInput.min), Number(basslineBpmInput.max)));
+
+    state.editorView = settings.editorView in SCORE_VIEW_PROFILES || settings.editorView === "spectrogram"
+      ? settings.editorView
+      : "spectrogram";
+    state.renderMode = typeof settings.renderMode === "string" ? settings.renderMode : "geometry";
+    state.frequencyAxis = settings.frequencyAxis === "linear" ? "linear" : "log";
+    state.showPhaseDiagnostics = Boolean(settings.showPhaseDiagnostics);
+    state.loopPlayback = Boolean(settings.loopPlayback);
+    state.currentBasslinePreset = typeof settings.currentBasslinePreset === "string"
+      ? settings.currentBasslinePreset
+      : "none";
+    state.freeMinFreq = Number(settings.freeMinFreq) || state.freeMinFreq;
+    state.freeMaxFreq = Number(settings.freeMaxFreq) || state.freeMaxFreq;
+    if (settings.scoreViewFreqs && settings.scoreViewFreqs["guitar-score"]) {
+      state.scoreViewFreqs["guitar-score"] = {
+        min: Number(settings.scoreViewFreqs["guitar-score"].min) || state.scoreViewFreqs["guitar-score"].min,
+        max: Number(settings.scoreViewFreqs["guitar-score"].max) || state.scoreViewFreqs["guitar-score"].max
+      };
+    }
+    if (settings.scoreViewFreqs && settings.scoreViewFreqs["piano-score"]) {
+      state.scoreViewFreqs["piano-score"] = {
+        min: Number(settings.scoreViewFreqs["piano-score"].min) || state.scoreViewFreqs["piano-score"].min,
+        max: Number(settings.scoreViewFreqs["piano-score"].max) || state.scoreViewFreqs["piano-score"].max
+      };
+    }
+
+    if (editorViewSelect) {
+      editorViewSelect.value = state.editorView;
+    }
+    if (renderModeSelect) {
+      renderModeSelect.value = state.renderMode;
+    }
+    if (frequencyAxisSelect) {
+      frequencyAxisSelect.value = state.frequencyAxis;
+    }
+    if (gridToggle) {
+      gridToggle.checked = settings.showGrid !== false;
+    }
+
+    const loadedRange = state.editorView === "spectrogram"
+      ? { min: state.freeMinFreq, max: state.freeMaxFreq }
+      : state.scoreViewFreqs[state.editorView] || defaultFrequencyRangeForView(state.editorView);
+    const normalizedRange = sanitizeFrequencyRange(loadedRange.min, loadedRange.max);
+    minFreqInput.value = String(Math.round(normalizedRange.min));
+    maxFreqInput.value = String(Math.round(normalizedRange.max));
+    rememberCurrentFrequencyRange(normalizedRange.min, normalizedRange.max);
+    minFreqInput.disabled = false;
+    maxFreqInput.disabled = false;
+
+    restoreSparseLayerData(drawData, layers.drawData);
+    restoreSparseLayerData(basslineData, layers.basslineData);
+    bassEvents.length = 0;
+    bassEvents.push(...cloneEventList(Array.isArray(events.bassEvents) ? events.bassEvents : []));
+    state.scoreEvents = cloneEventList(Array.isArray(events.scoreEvents) ? events.scoreEvents : []);
+
+    state.viewColSpan = Number(settings.viewColSpan) || state.viewColSpan;
+    state.viewOffsetCol = Number(settings.viewOffsetCol) || 0;
+    clampViewSpan();
+    clampViewOffset();
+    state.frequencyZoomReference = null;
+    resetUndoHistory();
+    setTool(typeof settings.tool === "string" ? settings.tool : "brush");
+    updateOutputs();
+    markDirty({ resetFrequencyReference: false });
+    persistSessionProjectNow();
+    stopPlayback(options.statusMessage || "Project loaded from soundpaint.json.");
+    renderCanvas();
+  }
+
+  async function loadSoundpaintProject(file) {
+    const text = await file.text();
+    let project;
+    try {
+      project = JSON.parse(text);
+    } catch (error) {
+      throw new Error("Project file is not valid JSON.");
+    }
+    applySoundpaintProject(project);
   }
 
   function captureEditorSnapshot() {
@@ -2088,43 +2534,58 @@
 
   function eraseAt(point, dtMs) {
     const amount = currentStrength() * 0.13 * (dtMs / 16);
+    const touchedDrawVisual = hasLayerContentNearPoint(drawData, point);
     const touchedBassVisual = hasLayerContentNearPoint(basslineData, point);
     stampBrush(point, -amount, 1.3, drawData);
     stampBrush(point, -amount, 1.3, basslineData);
     const removedBassEvents = removeBassEventsNearPoint(point);
-    removeScoreEventsNearPoint(point);
+    const removedScoreEvents = removeScoreEventsNearPoint(point);
     if (touchedBassVisual || removedBassEvents) {
       state.currentBasslinePreset = "custom";
     }
+    return {
+      draw: touchedDrawVisual,
+      bass: touchedBassVisual || removedBassEvents,
+      score: removedScoreEvents
+    };
   }
 
   function applyTool(point, dtMs, options = {}) {
     const direction = options.erase ? -1 : 1;
     if (state.tool === "brush") {
       stampBrush(point, currentStrength() * 0.1 * (dtMs / 16) * direction, 1.6, drawData);
+      return { draw: true, bass: false, score: false };
     } else if (state.tool === "erase") {
-      eraseAt(point, dtMs);
+      return eraseAt(point, dtMs);
     } else if (state.tool === "spray") {
       stampSpray(point, dtMs, direction, drawData);
+      return { draw: true, bass: false, score: false };
     } else if (state.tool === "gaussian") {
       const heldSeconds = (performance.now() - state.holdStartMs) / 1000;
       const swell = 0.08 + Math.min(1.4, heldSeconds * 0.85);
       stampGaussian(point, currentStrength() * swell * (dtMs / 16) * 0.08 * direction, 0.55, drawData);
+      return { draw: true, bass: false, score: false };
     }
+    return { draw: false, bass: false, score: false };
   }
 
   function paintSegment(from, to, dtMs) {
     const dx = to.col - from.col;
     const dy = to.row - from.row;
     const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy))));
+    const dirtyLayers = { draw: false, bass: false, score: false };
     for (let i = 0; i <= steps; i += 1) {
       const t = i / steps;
       const point = {
         col: lerp(from.col, to.col, t),
         row: lerp(from.row, to.row, t)
       };
-      applyTool(point, dtMs / steps);
+      const layers = applyTool(point, dtMs / steps);
+      dirtyLayers.draw = dirtyLayers.draw || layers.draw;
+      dirtyLayers.bass = dirtyLayers.bass || layers.bass;
+      dirtyLayers.score = dirtyLayers.score || layers.score;
     }
+    return dirtyLayers;
   }
 
   function stopHoldLoop() {
@@ -2140,9 +2601,9 @@
       return;
     }
     const dt = Math.max(8, now - state.lastHoldMs);
-    applyTool(state.currentPointer, dt);
+    const dirtyLayers = applyTool(state.currentPointer, dt);
     state.lastHoldMs = now;
-    markDirty();
+    markToolEditDirty(dirtyRangeFromPoints(state.currentPointer), dirtyLayers);
     renderCanvas();
     state.animationHoldId = requestAnimationFrame(holdLoop);
   }
@@ -2392,7 +2853,7 @@
 
   function buildSpectralAudioData() {
     const cols = trackColCount();
-    const totalSamples = Math.max(1, Math.floor(durationSeconds() * RENDER_SAMPLE_RATE));
+    const totalSamples = totalRenderSamples();
     const output = new Float32Array(totalSamples);
     const phases = new Float64Array(GRID_ROWS);
     const omegas = new Float64Array(GRID_ROWS);
@@ -2976,26 +3437,29 @@
   // Phase is not painted per pixel. It is inferred from geometry: continuous ridges become
   // coherent oscillators, fuzzy residual energy gets phase diffusion, and sharp vertical
   // onsets reset phase.
-  function buildDrawVoiceAudioData(analysis, tracks = extractDrawVoiceTracks(analysis)) {
+  function buildDrawVoiceAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis), options = {}) {
     const cols = trackColCount();
-    const totalSamples = Math.max(1, Math.floor(durationSeconds() * RENDER_SAMPLE_RATE));
-    const output = new Float32Array(totalSamples);
+    const window = makeRenderWindow(totalSamples, options);
+    const columnWindow = sampleRangeToColumnRange(totalSamples, window.rangeStartSample, window.rangeEndSample, 3);
 
     if (!tracks.length) {
-      return output;
+      return window.output;
     }
 
     const resetRampSamples = Math.max(16, Math.floor(RENDER_SAMPLE_RATE * 0.0025));
     const transientDecaySamples = Math.max(24, Math.floor(RENDER_SAMPLE_RATE * 0.01));
 
     for (const track of tracks) {
+      if (track.lastCol < columnWindow.startCol || track.firstCol > columnWindow.endCol) {
+        continue;
+      }
       let phase1 = track.initialPhase;
       let phase2 = (track.initialPhase * 2) % TAU;
       let phase3 = (track.initialPhase * 3) % TAU;
       let lastFreq = track.freqTrack[track.firstCol] > 0 ? track.freqTrack[track.firstCol] : 220;
       let smoothedFreq = lastFreq;
 
-      for (let col = track.firstCol; col <= track.lastCol; col += 1) {
+      for (let col = track.firstCol; col <= Math.min(track.lastCol, columnWindow.endCol); col += 1) {
         const sampleStart = Math.floor((col / cols) * totalSamples);
         const sampleEnd = Math.floor(((col + 1) / cols) * totalSamples);
         const segmentLength = Math.max(1, sampleEnd - sampleStart);
@@ -3059,9 +3523,9 @@
               + Math.sin(oldPhase2) * harmonic2Gain
               + Math.sin(oldPhase3) * harmonic3Gain;
             const body = lerp(oldBody, coherentBody, blend);
-            output[sample] += amp * transientShape * Math.tanh(body * 1.16);
+            writeRenderSample(window, sample, amp * transientShape * Math.tanh(body * 1.16));
           } else {
-            output[sample] += amp * transientShape * Math.tanh(coherentBody * 1.16);
+            writeRenderSample(window, sample, amp * transientShape * Math.tanh(coherentBody * 1.16));
           }
         }
 
@@ -3072,19 +3536,23 @@
       }
     }
 
-    return output;
+    return window.output;
   }
 
-  function buildDrawResidualAudioData(analysis, tracks) {
+  function buildDrawResidualAudioData(analysis, totalSamples, tracks, options = {}) {
     const cols = trackColCount();
-    const totalSamples = Math.max(1, Math.floor(durationSeconds() * RENDER_SAMPLE_RATE));
-    const output = new Float32Array(totalSamples);
+    const window = makeRenderWindow(totalSamples, options);
+    const output = window.output;
     const phases = new Float64Array(GRID_ROWS);
     const omegas = new Float64Array(GRID_ROWS);
+    const columnWindow = sampleRangeToColumnRange(totalSamples, window.rangeStartSample, window.rangeEndSample, 4);
+    const renderStartCol = window.partial ? columnWindow.startCol : 0;
+    const renderEndCol = window.partial ? columnWindow.endCol : cols - 1;
+    const localStartSample = Math.floor((renderStartCol / cols) * totalSamples);
 
     for (let row = 0; row < GRID_ROWS; row += 1) {
       omegas[row] = (TAU * freqFromRow(row)) / RENDER_SAMPLE_RATE;
-      phases[row] = deterministicPhase(row * 1.618);
+      phases[row] = deterministicPhase(row * 1.618) + omegas[row] * localStartSample;
     }
 
     function residualProfile(col, row) {
@@ -3133,7 +3601,7 @@
       return { amp, diffuseness, stability: coherenceShield };
     }
 
-    for (let col = 0; col < cols; col += 1) {
+    for (let col = renderStartCol; col <= renderEndCol; col += 1) {
       const sampleStart = Math.floor((col / cols) * totalSamples);
       const sampleEnd = Math.floor(((col + 1) / cols) * totalSamples);
       const segmentLength = Math.max(1, sampleEnd - sampleStart);
@@ -3159,7 +3627,7 @@
           const stability = lerp(profile0.stability, profile1.stability, localT);
           const phaseDiffusion = 0.012 * diffuseness * (1 - stability)
             * deterministicNoise(sample * 0.77 + row * 13.3 + col * 0.41);
-          output[sample] += amplitude * Math.sin(phase);
+          writeRenderSample(window, sample, amplitude * Math.sin(phase));
           phase += omega + phaseDiffusion;
         }
         phases[row] = phase % TAU;
@@ -3169,9 +3637,11 @@
     return output;
   }
 
-  function buildInstrumentTrackAudioData(analysis, totalSamples, tracks, instrument) {
+  function buildInstrumentTrackAudioData(analysis, totalSamples, tracks, instrument, options = {}) {
     const cols = trackColCount();
-    const output = new Float32Array(totalSamples);
+    const window = makeRenderWindow(totalSamples, options);
+    const output = window.output;
+    const columnWindow = sampleRangeToColumnRange(totalSamples, window.rangeStartSample, window.rangeEndSample, 3);
     const isGuitar = instrument === "guitar";
     const isPiano = instrument === "piano";
     const pluckPosControl = clamp(guitarPluckPosition(), 0.08, 0.45);
@@ -3195,6 +3665,9 @@
     const bodyModes = isGuitar ? guitarBodyModes : pianoBodyModes;
 
     for (const track of tracks) {
+      if (track.lastCol < columnWindow.startCol || track.firstCol > columnWindow.endCol) {
+        continue;
+      }
       const medianFreq = estimateTrackMedianFreq(track);
       const stringCount = isPiano
         ? (medianFreq < 280 ? 3 : medianFreq < 900 ? 2 : 1)
@@ -3229,7 +3702,7 @@
 
       resetInstrumentPhases(track.firstCol);
 
-      for (let col = track.firstCol; col <= track.lastCol; col += 1) {
+      for (let col = track.firstCol; col <= Math.min(track.lastCol, columnWindow.endCol); col += 1) {
         const sampleStart = Math.floor((col / cols) * totalSamples);
         const sampleEnd = Math.floor(((col + 1) / cols) * totalSamples);
         const segmentLength = Math.max(1, sampleEnd - sampleStart);
@@ -3332,7 +3805,7 @@
               + bodyResonance * (0.34 + 0.12 * transient)
               + attackNoise * (0.03 + 0.08 * transient + hammerHardness * 0.02);
           const envelope = amplitude * attackEnv * (0.18 + 0.82 * bodyDecay) * (0.86 + 0.14 * (1 - noisiness));
-          output[sample] += envelope * transientShape * instrumentBody;
+          writeRenderSample(window, sample, envelope * transientShape * instrumentBody);
           onsetAgeSamples += 1;
         }
 
@@ -3348,8 +3821,33 @@
     return (x - Math.floor(x)) * 2 - 1;
   }
 
-  function buildBassEventAudioData(totalSamples) {
-    const output = new Float32Array(totalSamples);
+  function clearSampleRange(output, startSample, endSample) {
+    output.fill(0, clamp(startSample, 0, output.length), clamp(endSample, 0, output.length));
+  }
+
+  function bassEventEndTime(event) {
+    if (event.type === "kick") {
+      return event.time + 0.44;
+    }
+    if (event.type === "snare") {
+      return event.time + 0.24;
+    }
+    if (event.type === "hat") {
+      return event.time + 0.11;
+    }
+    if (event.type === "bass") {
+      return event.time + Math.max(0.05, event.duration);
+    }
+    return event.time;
+  }
+
+  function buildBassEventAudioData(totalSamples, options = {}) {
+    const output = options.targetOutput || new Float32Array(totalSamples);
+    const writeStartSample = clamp(options.rangeStartSample ?? 0, 0, totalSamples);
+    const writeEndSample = clamp(options.rangeEndSample ?? totalSamples, writeStartSample, totalSamples);
+    if (options.targetOutput) {
+      clearSampleRange(output, writeStartSample, writeEndSample);
+    }
 
     function sampleIndexAt(seconds) {
       return clamp(Math.floor(seconds * RENDER_SAMPLE_RATE), 0, Math.max(0, totalSamples - 1));
@@ -3357,6 +3855,10 @@
 
     for (const event of state.bassEvents) {
       const startSample = sampleIndexAt(event.time);
+      const eventEndSample = clamp(Math.ceil(bassEventEndTime(event) * RENDER_SAMPLE_RATE), startSample, totalSamples);
+      if (eventEndSample <= writeStartSample || startSample >= writeEndSample) {
+        continue;
+      }
 
       if (event.type === "kick") {
         const duration = 0.44;
@@ -3373,7 +3875,10 @@
           clickMemory = clickMemory * 0.18 + clickNoise * 0.82;
           const body = Math.sin(phase) * 0.9 + Math.sin(phase * 2) * 0.08;
           const click = (clickNoise - clickMemory) * clickEnv * 0.12;
-          output[startSample + i] += event.gain * (body * bodyEnv + click);
+          const outputIndex = startSample + i;
+          if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+            output[outputIndex] += event.gain * (body * bodyEnv + click);
+          }
         }
         continue;
       }
@@ -3394,7 +3899,10 @@
           phaseA += (TAU * 196) / RENDER_SAMPLE_RATE;
           phaseB += (TAU * 318) / RENDER_SAMPLE_RATE;
           const body = Math.sin(phaseA) * 0.2 + Math.sin(phaseB) * 0.11;
-          output[startSample + i] += event.gain * (crispNoise * noiseEnv * 0.68 + body * toneEnv);
+          const outputIndex = startSample + i;
+          if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+            output[outputIndex] += event.gain * (crispNoise * noiseEnv * 0.68 + body * toneEnv);
+          }
         }
         continue;
       }
@@ -3416,7 +3924,10 @@
             phases[j] += (TAU * partials[j]) / RENDER_SAMPLE_RATE;
             metallic += Math.sin(phases[j]) * (j === 0 ? 0.22 : 0.16);
           }
-          output[startSample + i] += event.gain * env * (brightNoise * 0.46 + metallic);
+          const outputIndex = startSample + i;
+          if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+            output[outputIndex] += event.gain * env * (brightNoise * 0.46 + metallic);
+          }
         }
         continue;
       }
@@ -3444,7 +3955,10 @@
           const sawish = Math.sin(phaseSaw) * 0.28 + Math.sin(phaseUpper) * 0.14;
           const bite = Math.tanh(sub * 1.55 + sawish * 1.4);
           const transient = Math.exp(-time * 65) * Math.sin(phaseSaw * 0.5) * 0.09;
-          output[startSample + i] += event.gain * env * (sub + sawish * 0.65 + bite * 0.32 + transient);
+          const outputIndex = startSample + i;
+          if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+            output[outputIndex] += event.gain * env * (sub + sawish * 0.65 + bite * 0.32 + transient);
+          }
         }
       }
     }
@@ -3452,7 +3966,7 @@
     return output;
   }
 
-  function addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+  function addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample = 0, writeEndSample = output.length) {
     let phase1 = deterministicPhase(note.midi * 0.37 + note.startSec * 1.9);
     const duration = Math.max(0.02, note.durationSec);
     const releaseSeconds = Math.min(0.14, duration * 0.2);
@@ -3467,11 +3981,14 @@
       const releaseEnv = releaseEnvelope(time, duration, releaseSeconds);
       const env = attackEnv * releaseEnv * gain;
       const body = Math.sin(phase1);
-      output[startSample + i] += env * body;
+      const outputIndex = startSample + i;
+      if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+        output[outputIndex] += env * body;
+      }
     }
   }
 
-  function addIndependentScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+  function addIndependentScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample = 0, writeEndSample = output.length) {
     let phase1 = deterministicPhase(note.midi * 1.11 + note.startSec * 2.7);
     let phase2 = deterministicPhase(note.midi * 1.47 + note.startSec * 1.9);
     let phase3 = deterministicPhase(note.midi * 1.93 + note.startSec * 1.3);
@@ -3492,11 +4009,14 @@
       const releaseEnv = releaseEnvelope(time, duration, releaseSeconds);
       const env = attackEnv * releaseEnv * gain;
       const body = Math.sin(phase1) * 0.72 + Math.sin(phase2) * 0.18 + Math.sin(phase3) * 0.08 + Math.sin(phase4) * 0.04;
-      output[startSample + i] += env * body;
+      const outputIndex = startSample + i;
+      if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+        output[outputIndex] += env * body;
+      }
     }
   }
 
-  function addSpectralScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+  function addSpectralScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample = 0, writeEndSample = output.length) {
     const harmonicCount = 8;
     const phases = new Float64Array(harmonicCount);
     const detunes = new Float64Array(harmonicCount);
@@ -3522,11 +4042,14 @@
         phases[harmonic] += (TAU * freq * n * detunes[harmonic] * drift) / RENDER_SAMPLE_RATE;
         body += Math.sin(phases[harmonic]) / Math.pow(n, 0.86);
       }
-      output[startSample + i] += env * body * 0.78;
+      const outputIndex = startSample + i;
+      if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+        output[outputIndex] += env * body * 0.78;
+      }
     }
   }
 
-  function addGriffinScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+  function addGriffinScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample = 0, writeEndSample = output.length) {
     const harmonicCount = 10;
     const phases = new Float64Array(harmonicCount);
     const detunes = new Float64Array(harmonicCount);
@@ -3555,11 +4078,14 @@
       const rawNoise = deterministicNoise((startSample + i) * 0.91 + note.midi * 3.7);
       noiseMemory = noiseMemory * 0.78 + rawNoise * 0.22;
       const airy = (rawNoise - noiseMemory) * Math.exp(-time * 26) * 0.045;
-      output[startSample + i] += attackEnv * releaseEnv * gain * (body * 0.64 + airy);
+      const outputIndex = startSample + i;
+      if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+        output[outputIndex] += attackEnv * releaseEnv * gain * (body * 0.64 + airy);
+      }
     }
   }
 
-  function addHybridScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+  function addHybridScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample = 0, writeEndSample = output.length) {
     const harmonicCount = 7;
     const coherentPhases = new Float64Array(harmonicCount);
     const smearedPhases = new Float64Array(harmonicCount);
@@ -3588,11 +4114,14 @@
         coherent += Math.sin(coherentPhases[harmonic]) / Math.pow(n, 0.98);
         smeared += Math.sin(smearedPhases[harmonic]) / Math.pow(n, 0.78);
       }
-      output[startSample + i] += env * (coherent * 0.52 + smeared * 0.36);
+      const outputIndex = startSample + i;
+      if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+        output[outputIndex] += env * (coherent * 0.52 + smeared * 0.36);
+      }
     }
   }
 
-  function addPianoScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+  function addPianoScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample = 0, writeEndSample = output.length) {
     const duration = Math.max(0.02, note.durationSec);
     const hammerHardness = DEFAULT_PIANO_HAMMER_HARDNESS;
     const stringCoupling = DEFAULT_PIANO_STRING_COUPLING;
@@ -3667,11 +4196,14 @@
 
       const instrumentBody = Math.tanh(stringBody * 1.42) + bodyResonance * 0.42 + attackNoise * (0.03 + hammerHardness * 0.1);
       const env = attackEnv * releaseEnv * (0.18 + 0.82 * bodyDecay) * (0.22 + velocity * 0.78) * (0.9 + 0.1 * brightnessDecay);
-      output[startSample + i] += env * instrumentBody;
+      const outputIndex = startSample + i;
+      if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+        output[outputIndex] += env * instrumentBody;
+      }
     }
   }
 
-  function addGuitarScoreNote(output, startSample, sampleLength, note, velocity, freq) {
+  function addGuitarScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample = 0, writeEndSample = output.length) {
     const duration = Math.max(0.02, note.durationSec);
     const partialCount = 6;
     const partialPhases = new Float64Array(partialCount);
@@ -3736,16 +4268,35 @@
 
       const instrumentBody = Math.tanh(stringBody * 1.08) * (0.84 + 0.12 * brightnessDecay) + bodyResonance * 0.68 + attackNoise * 0.16;
       const env = attackEnv * releaseEnv * (0.18 + 0.82 * bodyDecay) * (0.22 + velocity * 0.78) * (0.98 - noteT * 0.12);
-      output[startSample + i] += env * instrumentBody;
+      const outputIndex = startSample + i;
+      if (outputIndex >= writeStartSample && outputIndex < writeEndSample) {
+        output[outputIndex] += env * instrumentBody;
+      }
     }
   }
 
   async function buildScoreEventAudioData(totalSamples, renderMode = state.renderMode, options = {}) {
-    const output = new Float32Array(totalSamples);
+    const output = options.targetOutput || new Float32Array(totalSamples);
     if (!state.scoreEvents.length) {
+      if (options.targetOutput) {
+        const emptyStart = clamp(options.rangeStartSample ?? 0, 0, totalSamples);
+        const emptyEnd = clamp(options.rangeEndSample ?? totalSamples, emptyStart, totalSamples);
+        clearSampleRange(output, emptyStart, emptyEnd);
+      }
       return output;
     }
-    const { onProgress, progressStart = 0, progressEnd = 1 } = options;
+    const {
+      onProgress,
+      progressStart = 0,
+      progressEnd = 1,
+      rangeStartSample = 0,
+      rangeEndSample = totalSamples
+    } = options;
+    const writeStartSample = clamp(rangeStartSample, 0, totalSamples);
+    const writeEndSample = clamp(rangeEndSample, writeStartSample, totalSamples);
+    if (options.targetOutput) {
+      clearSampleRange(output, writeStartSample, writeEndSample);
+    }
     const maybeYield = shouldUseCooperativeRender(totalSamples, state.scoreEvents.length)
       ? createRenderYieldController()
       : null;
@@ -3762,32 +4313,36 @@
       if (sampleLength <= 0) {
         continue;
       }
+      const endSample = clamp(startSample + sampleLength, startSample, totalSamples);
+      if (endSample <= writeStartSample || startSample >= writeEndSample) {
+        continue;
+      }
       const velocity = clamp(note.velocity || 0.78, 0.18, 1);
       const freq = midiToFreq(note.midi);
 
       try {
         switch (renderMode) {
           case "independent":
-            addIndependentScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            addIndependentScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
             break;
           case "spectral":
-            addSpectralScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            addSpectralScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
             break;
           case "griffin":
-            addGriffinScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            addGriffinScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
             break;
           case "hybrid":
-            addHybridScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            addHybridScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
             break;
           case "piano":
-            addPianoScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            addPianoScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
             break;
           case "guitar":
-            addGuitarScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            addGuitarScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
             break;
           case "geometry":
           default:
-            addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
             break;
         }
       } catch (error) {
@@ -3809,56 +4364,82 @@
     return output;
   }
 
-  function buildPianoLikeAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
-    const pianoVoices = buildInstrumentTrackAudioData(analysis, totalSamples, tracks, "piano");
-    const residual = buildDrawResidualAudioData(analysis, tracks);
+  function combineDrawLayers(totalSamples, primarySamples, residualSamples, residualGain, options = {}) {
+    const targetOutput = options.targetOutput || null;
+    const rangeStartSample = clamp(
+      Number.isFinite(options.rangeStartSample) ? options.rangeStartSample : 0,
+      0,
+      totalSamples
+    );
+    const rangeEndSample = clamp(
+      Number.isFinite(options.rangeEndSample) ? options.rangeEndSample : totalSamples,
+      rangeStartSample,
+      totalSamples
+    );
+
+    if (targetOutput) {
+      const rangeLength = sampleWindowLength(rangeStartSample, rangeEndSample);
+      const partial = new Float32Array(rangeLength);
+      for (let i = 0; i < rangeLength; i += 1) {
+        partial[i] = primarySamples[i] + residualSamples[i] * residualGain;
+      }
+      mixPartialRangeIntoTarget(targetOutput, partial, rangeStartSample, rangeEndSample);
+      return targetOutput;
+    }
+
     const output = new Float32Array(totalSamples);
     for (let i = 0; i < totalSamples; i += 1) {
-      output[i] = pianoVoices[i] + residual[i] * 0.16;
+      output[i] = primarySamples[i] + residualSamples[i] * residualGain;
     }
+    return output;
+  }
+
+  function buildPianoLikeAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis), options = {}) {
+    const pianoVoices = buildInstrumentTrackAudioData(analysis, totalSamples, tracks, "piano", options);
+    const residual = buildDrawResidualAudioData(analysis, totalSamples, tracks, options);
+    const output = combineDrawLayers(totalSamples, pianoVoices, residual, 0.16, options);
     return {
       samples: output,
       tracks
     };
   }
 
-  function buildGuitarLikeAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
-    const guitarVoices = buildInstrumentTrackAudioData(analysis, totalSamples, tracks, "guitar");
-    const residual = buildDrawResidualAudioData(analysis, tracks);
-    const output = new Float32Array(totalSamples);
-    for (let i = 0; i < totalSamples; i += 1) {
-      output[i] = guitarVoices[i] + residual[i] * 0.12;
-    }
+  function buildGuitarLikeAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis), options = {}) {
+    const guitarVoices = buildInstrumentTrackAudioData(analysis, totalSamples, tracks, "guitar", options);
+    const residual = buildDrawResidualAudioData(analysis, totalSamples, tracks, options);
+    const output = combineDrawLayers(totalSamples, guitarVoices, residual, 0.12, options);
     return {
       samples: output,
       tracks
     };
   }
 
-  function buildGeometryCoherenceAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
-    const drawVoices = buildDrawVoiceAudioData(analysis, tracks);
-    const drawResidual = buildDrawResidualAudioData(analysis, tracks);
-    const output = new Float32Array(totalSamples);
-    for (let i = 0; i < output.length; i += 1) {
-      output[i] = drawVoices[i] + drawResidual[i] * 0.82;
-    }
+  function buildGeometryCoherenceAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis), options = {}) {
+    const drawVoices = buildDrawVoiceAudioData(analysis, totalSamples, tracks, options);
+    const drawResidual = buildDrawResidualAudioData(analysis, totalSamples, tracks, options);
+    const output = combineDrawLayers(totalSamples, drawVoices, drawResidual, 0.82, options);
     return {
       samples: output,
       tracks
     };
   }
 
-  function buildIndependentOscillatorAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis)) {
+  function buildIndependentOscillatorAudioData(analysis, totalSamples, tracks = extractDrawVoiceTracks(analysis), options = {}) {
     const cols = trackColCount();
-    const output = new Float32Array(totalSamples);
+    const window = makeRenderWindow(totalSamples, options);
+    const output = window.output;
+    const columnWindow = sampleRangeToColumnRange(totalSamples, window.rangeStartSample, window.rangeEndSample, 3);
 
     for (const track of tracks) {
+      if (track.lastCol < columnWindow.startCol || track.firstCol > columnWindow.endCol) {
+        continue;
+      }
       let phase1 = deterministicPhase(track.firstCol * 0.71 + track.id * 13.1 + 0.9);
       let phase2 = deterministicPhase(track.firstCol * 0.31 + track.id * 23.7 + 1.7);
       let phase3 = deterministicPhase(track.firstCol * 0.19 + track.id * 31.3 + 2.1);
       let lastFreq = track.freqTrack[track.firstCol] > 0 ? track.freqTrack[track.firstCol] : 220;
 
-      for (let col = track.firstCol; col <= track.lastCol; col += 1) {
+      for (let col = track.firstCol; col <= Math.min(track.lastCol, columnWindow.endCol); col += 1) {
         if (track.activeTrack[col] < 0.1) {
           continue;
         }
@@ -3883,21 +4464,54 @@
           phase1 += (TAU * freq) / RENDER_SAMPLE_RATE;
           phase2 += (TAU * freq * 2) / RENDER_SAMPLE_RATE;
           phase3 += (TAU * freq * 3) / RENDER_SAMPLE_RATE;
-          output[sample] += amp * (
+          writeRenderSample(window, sample, amp * (
             Math.sin(phase1) * 0.94
               + Math.sin(phase2) * 0.085
               + Math.sin(phase3) * 0.025
-          );
+          ));
         }
 
         lastFreq = freq1;
       }
     }
 
+    const samples = options.targetOutput
+      ? mixPartialRangeIntoTarget(options.targetOutput, output, window.rangeStartSample, window.rangeEndSample)
+      : output;
     return {
-      samples: output,
+      samples,
       tracks
     };
+  }
+
+  async function buildDrawLayerAudioData(analysis, totalSamples, tracks, options = {}) {
+    switch (state.renderMode) {
+      case "independent":
+        options.onStatus?.("Synthesizing independent oscillators");
+        return buildIndependentOscillatorAudioData(analysis, totalSamples, tracks, options);
+      case "piano":
+        options.onStatus?.("Synthesizing piano-like resonances");
+        return buildPianoLikeAudioData(analysis, totalSamples, tracks, options);
+      case "guitar":
+        options.onStatus?.("Synthesizing guitar-like plucks");
+        return buildGuitarLikeAudioData(analysis, totalSamples, tracks, options);
+      case "spectral":
+        options.onStatus?.("Synthesizing spectral bins");
+        return buildSpectralBinAudioData(analysis, totalSamples);
+      case "griffin":
+        options.onStatus?.("Initializing Griffin-Lim");
+        return buildGriffinLimAudioData(analysis, totalSamples, {
+          tracks,
+          onProgress: options.onProgress
+        });
+      case "hybrid":
+        options.onStatus?.("Building hybrid seed");
+        return buildHybridAudioData(analysis, totalSamples, tracks, options.onHybridProgress);
+      case "geometry":
+      default:
+        options.onStatus?.("Synthesizing geometry coherence");
+        return buildGeometryCoherenceAudioData(analysis, totalSamples, tracks, options);
+    }
   }
 
   function buildSpectralBinAudioData() {
@@ -4286,8 +4900,8 @@
       progressStart: scoreProgressStart,
       progressEnd: scoreProgressEnd
     });
-    const output = new Float32Array(totalSamples);
-    const hasDrawEnergy = analysis.energy.some((value) => value > EPSILON);
+    const mixedRaw = new Float32Array(totalSamples);
+    const hasDrawEnergy = hasDrawLayerEnergy(analysis);
     let tracks = hasDrawEnergy ? extractDrawVoiceTracks(analysis) : [];
     let iterations = 0;
     let drawRender = {
@@ -4297,61 +4911,33 @@
     };
 
     if (hasDrawEnergy) {
-      switch (state.renderMode) {
-        case "independent":
-          onProgress?.(rendererProgressStart, "Synthesizing independent oscillators");
-          drawRender = buildIndependentOscillatorAudioData(analysis, totalSamples, tracks);
-          break;
-        case "piano":
-          onProgress?.(rendererProgressStart, "Synthesizing piano-like resonances");
-          drawRender = buildPianoLikeAudioData(analysis, totalSamples, tracks);
-          break;
-        case "guitar":
-          onProgress?.(rendererProgressStart, "Synthesizing guitar-like plucks");
-          drawRender = buildGuitarLikeAudioData(analysis, totalSamples, tracks);
-          break;
-        case "spectral":
-          onProgress?.(rendererProgressStart, "Synthesizing spectral bins");
-          drawRender = buildSpectralBinAudioData(analysis, totalSamples);
-          break;
-        case "griffin":
-          onProgress?.(rendererProgressStart, "Initializing Griffin-Lim");
-          drawRender = await buildGriffinLimAudioData(analysis, totalSamples, {
-            tracks,
-            onProgress: (iteration, totalIterations) => {
-              onProgress?.(
-                lerp(rendererProgressStart, rendererProgressEnd, iteration / totalIterations),
-                `Griffin-Lim iteration ${iteration}/${totalIterations}`
-              );
-            }
-          });
-          break;
-        case "hybrid":
-          onProgress?.(rendererProgressStart, "Building hybrid seed");
-          drawRender = await buildHybridAudioData(analysis, totalSamples, tracks, (fraction, detail) => {
-            onProgress?.(lerp(rendererProgressStart, rendererProgressEnd, fraction), detail);
-          });
-          break;
-        case "geometry":
-        default:
-          onProgress?.(rendererProgressStart, "Synthesizing geometry coherence");
-          drawRender = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
-          break;
-      }
+      drawRender = await buildDrawLayerAudioData(analysis, totalSamples, tracks, {
+        onStatus: (detail) => onProgress?.(rendererProgressStart, detail),
+        onProgress: (iteration, totalIterations) => {
+          onProgress?.(
+            lerp(rendererProgressStart, rendererProgressEnd, iteration / totalIterations),
+            `Griffin-Lim iteration ${iteration}/${totalIterations}`
+          );
+        },
+        onHybridProgress: (fraction, detail) => {
+          onProgress?.(lerp(rendererProgressStart, rendererProgressEnd, fraction), detail);
+        }
+      });
     } else {
       onProgress?.(rendererProgressStart, "No freehand drawing layer to synthesize");
     }
 
     iterations = drawRender.iterations || 0;
     onProgress?.(0.94, "Mixing and normalizing");
-    for (let i = 0; i < output.length; i += 1) {
-      output[i] = drawRender.samples[i] + score[i] + bass[i];
+    for (let i = 0; i < mixedRaw.length; i += 1) {
+      mixedRaw[i] = drawRender.samples[i] + score[i] + bass[i];
       if (maybeYield && i % RENDER_MIX_CHUNK_SIZE === 0 && i > 0) {
-        onProgress?.(lerp(0.94, 0.975, i / Math.max(1, output.length - 1)), "Mixing and normalizing");
+        onProgress?.(lerp(0.94, 0.975, i / Math.max(1, mixedRaw.length - 1)), "Mixing and normalizing");
         await maybeYield();
       }
     }
 
+    const output = mixedRaw.slice();
     onProgress?.(0.978, "Normalizing output");
     await normalizeAudioData(output, maybeYield);
     onProgress?.(0.992, "Applying output fade");
@@ -4359,6 +4945,144 @@
     const scoreModeLabel = state.scoreEvents.length ? `${scoreViewLabel()} note events` : "";
     return {
       samples: output,
+      rawMix: mixedRaw,
+      drawSamples: drawRender.samples,
+      scoreSamples: score,
+      bassSamples: bass,
+      totalSamples,
+      iterations,
+      modeLabel: scoreModeLabel
+        ? `${renderModeName(state.renderMode)} + ${scoreModeLabel}`
+        : renderModeName(state.renderMode),
+      tracks,
+      analysis
+    };
+  }
+
+  async function buildIncrementalAudioData(options = {}) {
+    const { onProgress } = options;
+    const cache = state.renderCache;
+    if (!cache || state.dirtyRender.full) {
+      return buildAudioData(options);
+    }
+
+    const totalSamples = totalRenderSamples();
+    if (cache.totalSamples !== totalSamples || cache.renderMode !== state.renderMode) {
+      state.dirtyRender.full = true;
+      return buildAudioData(options);
+    }
+
+    const startSample = clamp(state.dirtyRender.startSample, 0, totalSamples);
+    const endSample = clamp(state.dirtyRender.endSample, startSample, totalSamples);
+    if (endSample <= startSample) {
+      return buildAudioData(options);
+    }
+
+    let analysis = null;
+    let tracks = [];
+    let iterations = 0;
+    let remixStart = startSample;
+    let remixEnd = endSample;
+    let fullMixRefresh = false;
+
+    onProgress?.(0.04, "Analyzing drawing");
+    if (state.dirtyRender.layers.draw) {
+      analysis = analyzeColumns();
+      const hasDrawEnergy = hasDrawLayerEnergy(analysis);
+      tracks = hasDrawEnergy ? extractDrawVoiceTracks(analysis) : [];
+      if (drawLayerCanRenderIncrementally(state.renderMode)) {
+        onProgress?.(0.08, "Updating changed drawing section");
+        if (hasDrawEnergy) {
+          const drawRender = await buildDrawLayerAudioData(analysis, totalSamples, tracks, {
+            targetOutput: cache.drawSamples,
+            rangeStartSample: startSample,
+            rangeEndSample: endSample,
+            onStatus: (detail) => onProgress?.(0.08, detail),
+            onProgress: (iteration, totalIterations) => {
+              onProgress?.(
+                lerp(0.08, 0.42, iteration / totalIterations),
+                `Griffin-Lim iteration ${iteration}/${totalIterations}`
+              );
+            },
+            onHybridProgress: (fraction, detail) => {
+              onProgress?.(lerp(0.08, 0.42, fraction), detail);
+            }
+          });
+          iterations = drawRender.iterations || 0;
+        } else {
+          clearSampleRange(cache.drawSamples, startSample, endSample);
+        }
+      } else {
+        onProgress?.(0.08, "Refreshing freehand layer");
+        if (hasDrawEnergy) {
+          const drawRender = await buildDrawLayerAudioData(analysis, totalSamples, tracks, {
+            onStatus: (detail) => onProgress?.(0.08, detail),
+            onProgress: (iteration, totalIterations) => {
+              onProgress?.(
+                lerp(0.08, 0.48, iteration / totalIterations),
+                `Griffin-Lim iteration ${iteration}/${totalIterations}`
+              );
+            },
+            onHybridProgress: (fraction, detail) => {
+              onProgress?.(lerp(0.08, 0.48, fraction), detail);
+            }
+          });
+          cache.drawSamples = drawRender.samples;
+          iterations = drawRender.iterations || 0;
+        } else {
+          cache.drawSamples = new Float32Array(totalSamples);
+        }
+        fullMixRefresh = true;
+        remixStart = 0;
+        remixEnd = totalSamples;
+      }
+    }
+
+    onProgress?.(0.52, "Updating changed section");
+    if (state.dirtyRender.layers.score) {
+      await buildScoreEventAudioData(totalSamples, state.renderMode, {
+        targetOutput: cache.scoreSamples,
+        rangeStartSample: startSample,
+        rangeEndSample: endSample,
+        onProgress: (progress, detail, progressText) => {
+          onProgress?.(lerp(0.52, 0.78, progress), detail, progressText);
+        },
+        progressStart: 0,
+        progressEnd: 1
+      });
+    }
+    if (state.dirtyRender.layers.bass) {
+      onProgress?.(0.8, "Updating bass events");
+      buildBassEventAudioData(totalSamples, {
+        targetOutput: cache.bassSamples,
+        rangeStartSample: startSample,
+        rangeEndSample: endSample
+      });
+    }
+
+    onProgress?.(0.86, fullMixRefresh ? "Remixing updated layers" : "Remixing changed section");
+    for (let i = remixStart; i < remixEnd; i += 1) {
+      cache.rawMix[i] = cache.drawSamples[i] + cache.scoreSamples[i] + cache.bassSamples[i];
+    }
+
+    const output = cache.rawMix.slice();
+    onProgress?.(0.94, "Normalizing output");
+    await normalizeAudioData(output, shouldUseCooperativeRender(totalSamples, state.scoreEvents.length) ? createRenderYieldController() : null);
+    onProgress?.(0.985, "Applying output fade");
+    await applyEdgeFade(output, null);
+
+    if (!analysis) {
+      analysis = analyzeColumns();
+      tracks = hasDrawLayerEnergy(analysis) ? extractDrawVoiceTracks(analysis) : [];
+    }
+    const scoreModeLabel = state.scoreEvents.length ? `${scoreViewLabel()} note events` : "";
+    return {
+      samples: output,
+      rawMix: cache.rawMix,
+      drawSamples: cache.drawSamples,
+      scoreSamples: cache.scoreSamples,
+      bassSamples: cache.bassSamples,
+      totalSamples,
       iterations,
       modeLabel: scoreModeLabel
         ? `${renderModeName(state.renderMode)} + ${scoreModeLabel}`
@@ -4403,7 +5127,7 @@
   }
 
   async function renderIfNeeded(reason) {
-    if (!state.dirty && state.renderedBuffer) {
+    if (hasCurrentRenderedBuffer()) {
       return state.renderedBuffer;
     }
     if (state.renderPromise) {
@@ -4426,7 +5150,7 @@
 
       try {
         const startedAt = performance.now();
-        const renderResult = await buildAudioData({
+        const renderResult = await (state.dirtyRender.full ? buildAudioData({
           onProgress: (progress, detail, progressText) => {
             if (token !== state.renderToken) {
               return;
@@ -4438,7 +5162,19 @@
               progressText
             });
           }
-        });
+        }) : buildIncrementalAudioData({
+          onProgress: (progress, detail, progressText) => {
+            if (token !== state.renderToken) {
+              return;
+            }
+            setRenderOverlay(true, {
+              title: "Rendering audio",
+              detail,
+              progress,
+              progressText
+            });
+          }
+        }));
         const elapsedMs = performance.now() - startedAt;
         if (token !== state.renderToken) {
           return null;
@@ -4461,6 +5197,21 @@
         await yieldToBrowser();
         state.renderedBuffer = buffer;
         state.playDurationSeconds = buffer.duration;
+        state.renderCache = {
+          totalSamples: renderResult.totalSamples,
+          renderMode: state.renderMode,
+          drawSamples: renderResult.drawSamples,
+          scoreSamples: renderResult.scoreSamples,
+          bassSamples: renderResult.bassSamples,
+          rawMix: renderResult.rawMix
+        };
+        state.lastRenderedDataVersion = state.dataVersion;
+        state.dirtyRender = {
+          full: false,
+          startSample: 0,
+          endSample: 0,
+          layers: { draw: false, bass: false, score: false }
+        };
         state.latestRenderInfo = {
           mode: renderResult.modeLabel,
           iterations: renderResult.iterations || 0,
@@ -4585,6 +5336,7 @@
       tool = "brush";
     }
     state.tool = tool;
+    scheduleSessionProjectSave();
     updateToolParameterVisibility();
     for (const button of toolButtons) {
       button.classList.toggle("is-active", button.dataset.tool === tool);
@@ -5341,8 +6093,8 @@
       return;
     }
 
-    applyTool(scorePoint, 16);
-    markDirty();
+    const dirtyLayers = applyTool(scorePoint, 16);
+    markToolEditDirty(dirtyRangeFromPoints(scorePoint), dirtyLayers);
     renderCanvas();
     startHoldLoop();
   }
@@ -5365,8 +6117,17 @@
       setStatus(`Paused at ${state.pausedOffsetSeconds.toFixed(2)} s. Drag the playhead to shift the current time slice.`);
     } else if (state.drawing && state.pointerId === event.pointerId) {
       if (state.scoreEditMode) {
-        if (applyScoreNoteEdit(point)) {
-          markDirty();
+        const originalNote = state.scoreEditOriginalNote;
+        if (applyScoreNoteEdit(point) && originalNote) {
+          const currentNote = state.scoreEvents[state.scoreEditIndex];
+          const originalSpan = noteRenderSpan(originalNote);
+          const currentSpan = noteRenderSpan(currentNote);
+          markDirty({
+            full: false,
+            layers: ["score"],
+            rangeStartSec: Math.min(originalSpan.startSec, currentSpan.startSec),
+            rangeEndSec: Math.max(originalSpan.endSec, currentSpan.endSec)
+          });
         }
       } else if (state.tool === "line") {
         if (event.shiftKey && state.lineStart) {
@@ -5381,8 +6142,8 @@
       } else if (state.tool === "note") {
         state.linePreview = scorePoint;
       } else if (state.lastPointer) {
-        paintSegment(state.lastPointer, point, 20);
-        markDirty();
+        const dirtyLayers = paintSegment(state.lastPointer, point, 20);
+        markToolEditDirty(dirtyRangeFromPoints(state.lastPointer, point), dirtyLayers);
       }
       state.lastPointer = scorePoint || point;
     }
@@ -5407,10 +6168,21 @@
       state.scoreEvents = mergeAdjacentNoteEvents(state.scoreEvents);
     } else if (state.tool === "line" && state.lineStart && state.linePreview) {
       stampLine(state.lineStart, state.linePreview, 1);
-      markDirty();
+      markToolEditDirty(dirtyRangeFromPoints(state.lineStart, state.linePreview), {
+        draw: true,
+        bass: false,
+        score: false
+      });
     } else if (state.tool === "note" && state.lineStart && state.linePreview) {
-      if (addScoreNoteEvent(state.lineStart, state.linePreview)) {
-        markDirty();
+      const addedNote = addScoreNoteEvent(state.lineStart, state.linePreview);
+      if (addedNote) {
+        const span = noteRenderSpan(addedNote);
+        markDirty({
+          full: false,
+          layers: ["score"],
+          rangeStartSec: span.startSec,
+          rangeEndSec: span.endSec
+        });
       }
       state.noteDurationUnlocked = false;
       state.noteUnlockCol = null;
@@ -5638,6 +6410,30 @@
       });
     }
 
+    if (projectSaveButton) {
+      projectSaveButton.addEventListener("click", saveSoundpaintProject);
+    }
+    if (projectLoadButton && projectLoadInput) {
+      projectLoadButton.addEventListener("click", () => {
+        projectLoadInput.click();
+      });
+      projectLoadInput.addEventListener("change", async () => {
+        const [file] = Array.from(projectLoadInput.files || []);
+        if (!file) {
+          return;
+        }
+        try {
+          setStatus(`Loading project from ${file.name}...`);
+          await loadSoundpaintProject(file);
+        } catch (error) {
+          reportBootError(error);
+          setStatus(`Project load failed: ${error.message || String(error)}`);
+        } finally {
+          projectLoadInput.value = "";
+        }
+      });
+    }
+
     basslineBpmInput.addEventListener("input", () => {
       updateOutputs();
       if (isReloadableBasslinePreset(state.currentBasslinePreset)) {
@@ -5661,6 +6457,7 @@
 
     gainInput.addEventListener("input", () => {
       updateOutputs();
+      scheduleSessionProjectSave();
       if (state.gainNode) {
         state.gainNode.gain.value = Number(gainInput.value);
       }
@@ -5670,6 +6467,7 @@
       loopButton.addEventListener("click", () => {
         state.loopPlayback = !state.loopPlayback;
         updateOutputs();
+        scheduleSessionProjectSave();
         if (state.sourceNode) {
           state.sourceNode.loop = state.loopPlayback;
         }
@@ -5706,11 +6504,15 @@
     if (phaseDiagnosticsToggle) {
       phaseDiagnosticsToggle.addEventListener("change", () => {
         state.showPhaseDiagnostics = phaseDiagnosticsToggle.checked;
+        scheduleSessionProjectSave();
         renderCanvas();
       });
     }
 
-    gridToggle.addEventListener("change", renderCanvas);
+    gridToggle.addEventListener("change", () => {
+      scheduleSessionProjectSave();
+      renderCanvas();
+    });
 
     playButton.addEventListener("click", playAudio);
     pauseButton.addEventListener("click", pausePlayback);
@@ -5751,6 +6553,7 @@
       updateOutputs();
       renderCanvas();
     });
+    window.addEventListener("pagehide", persistSessionProjectNow);
     window.addEventListener("pointerdown", (event) => {
       if (!state.toolSettingsOpen || !toolSettingsWrap) {
         return;
@@ -5846,7 +6649,9 @@
     updateOutputs();
     bindControls();
     setTool("brush");
-    applyPreset("riser");
+    if (!restoreSessionProjectIfAvailable()) {
+      applyPreset("riser");
+    }
     window.__spectrogramBooted = true;
   } catch (error) {
     reportBootError(error);

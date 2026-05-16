@@ -800,6 +800,19 @@ select:hover {
   gap: 0.65rem;
 }
 
+.project-file-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.project-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.52rem;
+  padding-inline: 0.9rem;
+  font-weight: 600;
+}
+
 select {
   width: 100%;
   padding: 0.72rem 0.78rem;
