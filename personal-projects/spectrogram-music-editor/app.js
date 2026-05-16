@@ -149,6 +149,8 @@
       lineStart: null,
       linePreview: null,
       pointerId: null,
+      noteDurationUnlocked: false,
+      noteUnlockCol: null,
       dirty: true,
       renderedBuffer: null,
       renderedWav: null,
@@ -213,9 +215,12 @@
     return (Number(sizeInput.value) / plotWidth()) * visibleColCount();
   }
 
-  function noteToolDurationSeconds() {
-    const visibleSeconds = visibleTimeRange().end - visibleTimeRange().start;
-    return clamp(visibleSeconds * 0.06, 0.12, 0.6);
+  function defaultScoreNoteLengthBeats() {
+    return 2;
+  }
+
+  function scoreNoteDragActivationBeats() {
+    return 0.75;
   }
 
   function scoreBeatSeconds() {
@@ -223,7 +228,7 @@
   }
 
   function scoreQuantizationStepBeats() {
-    return 0.25;
+    return 0.0625;
   }
 
   function scoreAllowedNoteLengthsBeats() {
@@ -249,6 +254,14 @@
     return best;
   }
 
+  function quantizedScoreDurationBeatsFromDrag(dragBeatsFromUnlock) {
+    if (!state.noteDurationUnlocked) {
+      return defaultScoreNoteLengthBeats();
+    }
+    const candidateBeats = Math.max(scoreAllowedNoteLengthsBeats()[0], 1 + dragBeatsFromUnlock);
+    return nearestAllowedScoreLengthBeats(candidateBeats);
+  }
+
   function quantizedScoreNotePlacement(startPoint, endPoint) {
     const startSnap = snapPointToScoreMidi(startPoint);
     const endSnap = snapPointToScoreMidi(endPoint);
@@ -256,17 +269,21 @@
       return null;
     }
 
-    const rawStartSec = timeFromCol(Math.min(startSnap.col, endSnap.col));
-    const rawEndSec = timeFromCol(Math.max(
-      startSnap.col,
-      endSnap.col,
-      Math.min(startSnap.col, endSnap.col) + noteToolDurationSeconds() * COLS_PER_SECOND
-    ));
+    const startCol = startSnap.col;
+    const endCol = endSnap.col;
+    const rawStartSec = timeFromCol(startCol);
     const beatSeconds = scoreBeatSeconds();
     const stepBeats = scoreQuantizationStepBeats();
     const quantizedStartBeats = Math.max(0, quantizeToStep(rawStartSec / beatSeconds, stepBeats));
-    const rawDurationBeats = Math.max(stepBeats, (rawEndSec - rawStartSec) / beatSeconds);
-    const quantizedDurationBeats = nearestAllowedScoreLengthBeats(rawDurationBeats);
+    const activationBeats = scoreNoteDragActivationBeats();
+    const rawDragBeats = Math.abs((timeFromCol(endCol) - rawStartSec) / beatSeconds);
+    if (!state.noteDurationUnlocked && rawDragBeats > activationBeats) {
+      state.noteDurationUnlocked = true;
+      state.noteUnlockCol = endCol;
+    }
+    const unlockCol = state.noteUnlockCol === null ? endCol : state.noteUnlockCol;
+    const dragBeatsFromUnlock = (timeFromCol(endCol) - timeFromCol(unlockCol)) / beatSeconds;
+    const quantizedDurationBeats = quantizedScoreDurationBeatsFromDrag(dragBeatsFromUnlock);
     const startSec = clamp(quantizedStartBeats * beatSeconds, 0, Math.max(0, durationSeconds() - stepBeats * beatSeconds));
     const endSec = clamp(startSec + quantizedDurationBeats * beatSeconds, startSec + stepBeats * beatSeconds, durationSeconds());
     return {
@@ -4609,6 +4626,10 @@
     if (state.tool === "line" || state.tool === "note") {
       state.lineStart = scorePoint;
       state.linePreview = scorePoint;
+      if (state.tool === "note") {
+        state.noteDurationUnlocked = false;
+        state.noteUnlockCol = null;
+      }
       renderCanvas();
       return;
     }
@@ -4678,6 +4699,8 @@
       if (addScoreNoteEvent(state.lineStart, state.linePreview)) {
         markDirty();
       }
+      state.noteDurationUnlocked = false;
+      state.noteUnlockCol = null;
     }
 
     state.drawing = false;
@@ -4685,6 +4708,8 @@
     state.pointerId = null;
     state.lineStart = null;
     state.linePreview = null;
+    state.noteDurationUnlocked = false;
+    state.noteUnlockCol = null;
     stopHoldLoop();
     commitUndoGesture();
     renderCanvas();
