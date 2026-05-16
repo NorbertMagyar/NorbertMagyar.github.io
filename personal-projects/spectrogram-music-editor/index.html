@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Norbert Magyar | Spectrogram Music Editor</title>
+  <meta name="description" content="A browser-based spectrogram music editor where painted shapes become playable sound." />
+  <link rel="canonical" href="https://norbertmagyar.github.io/personal-projects/spectrogram-music-editor/" />
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="Norbert Magyar" />
+  <meta property="og:title" content="Norbert Magyar | Spectrogram Music Editor" />
+  <meta property="og:description" content="Paint a time-frequency map in the browser and hear it as synthesized sound." />
+  <meta property="og:url" content="https://norbertmagyar.github.io/personal-projects/spectrogram-music-editor/" />
+  <meta property="og:image" content="https://norbertmagyar.github.io/photo2.jpg" />
+  <meta property="article:published_time" content="2026-05-16" />
+  <meta property="article:modified_time" content="2026-05-16" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Norbert Magyar | Spectrogram Music Editor" />
+  <meta name="twitter:description" content="Paint a time-frequency map in the browser and hear it as synthesized sound." />
+  <meta name="twitter:image" content="https://norbertmagyar.github.io/photo2.jpg" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Spectrogram Music Editor",
+    "applicationCategory": "MultimediaApplication",
+    "operatingSystem": "Any",
+    "creator": {
+      "@type": "Person",
+      "name": "Norbert Magyar",
+      "url": "https://norbertmagyar.github.io/"
+    },
+    "url": "https://norbertmagyar.github.io/personal-projects/spectrogram-music-editor/",
+    "description": "A browser-based spectrogram music editor where painted shapes become playable sound.",
+    "inLanguage": "en"
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {
+        "@type": "ListItem",
+        "position": 1,
+        "name": "Home",
+        "item": "https://norbertmagyar.github.io/"
+      },
+      {
+        "@type": "ListItem",
+        "position": 2,
+        "name": "Personal Projects",
+        "item": "https://norbertmagyar.github.io/personal-projects/"
+      },
+      {
+        "@type": "ListItem",
+        "position": 3,
+        "name": "Spectrogram Music Editor",
+        "item": "https://norbertmagyar.github.io/personal-projects/spectrogram-music-editor/"
+      }
+    ]
+  }
+  </script>
+  <link rel="stylesheet" href="../../style.css" />
+  <link rel="stylesheet" href="./app.css" />
+  <script defer src="../../analytics.js"></script>
+  <script>
+    if ((location.protocol === "http:" || location.protocol === "https:") && location.pathname.endsWith("/index.html")) {
+      location.replace(location.pathname.replace(/index\.html$/, "") + location.search + location.hash);
+    }
+  </script>
+</head>
+<body>
+  <div class="container">
+    <header class="site-header">
+      <img src="../../photo2.jpg" alt="Portrait of Norbert Magyar" class="profile-photo" />
+      <div class="header-content">
+        <h1>Norbert Magyar, PhD</h1>
+        <p class="tagline">Senior Software Engineer | HPC • Space Systems • AI | Astrophysics PhD</p>
+        <nav>
+          <a href="/">Home</a>
+          <a href="/#projects">Projects</a>
+          <a href="/#publications">Publications</a>
+          <a href="https://drive.google.com/file/d/1G0JDLsUOZ3c8C-4bo88HqySkLNYKSxh1/view?usp=sharing" target="_blank" rel="noopener">CV (PDF)</a>
+          <a href="/#talks">Talks, Awards, Highlights</a>
+          <a href="/personal-projects/" aria-current="page">Personal Projects</a>
+          <a href="/hobbies/">Hobbies</a>
+          <a href="/#contact">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="blog-main">
+      <p><a class="back-link" href="/personal-projects/">← Back to Personal Projects Blog</a></p>
+
+      <article class="post-card post-full synth-post">
+        <p class="post-meta"><time datetime="2026-05-16">May 16, 2026</time> • Audio • Browser Tool • Synthesis</p>
+        <h1>Spectrogram Music Editor</h1>
+        <div class="post-body">
+          <p>
+            This is a browser-based music sketchpad built around a simple idea: paint sound directly on a
+            time-frequency plane and listen to the result. The vertical axis represents frequency, the horizontal
+            axis represents time, and brightness maps to amplitude. Draw a diagonal line and you get a sweep.
+            Paint several bands and you get chords, textures, and noisy clouds.
+          </p>
+          <p>
+            The app supports several paint-like tools, keyboard shortcuts, and in-browser playback. Everything
+            runs locally in JavaScript through the Web Audio API, so nothing needs to be installed.
+          </p>
+
+          <section class="spectro-hero" aria-label="Spectrogram editor overview">
+            <div>
+              <p class="hero-kicker">Paint sound, then play it.</p>
+              <h2>Draw frequency over time</h2>
+              <p class="hero-copy">
+                Use the brush for freehand lines, spray for grainy textures, gaussian for swelling spectral peaks,
+                line for controlled sweeps, and erase to cut holes in the spectrum.
+              </p>
+            </div>
+            <div class="hero-chip-row" aria-label="Feature summary">
+              <span class="hero-chip">Web Audio playback</span>
+              <span class="hero-chip">Brush / Spray / Gaussian / Line / Erase</span>
+              <span class="hero-chip">WAV export</span>
+              <span class="hero-chip">Keyboard shortcuts</span>
+            </div>
+          </section>
+
+          <section class="editor-shell">
+            <div class="editor-surface">
+              <div class="surface-toolbar">
+                <div class="button-row">
+                  <button id="play-btn" type="button" class="action-btn primary-btn">Play</button>
+                  <button id="pause-btn" type="button" class="action-btn">Pause</button>
+                  <button id="stop-btn" type="button" class="action-btn">Stop</button>
+                  <button id="render-btn" type="button" class="action-btn">Render</button>
+                  <button id="export-btn" type="button" class="action-btn">Export WAV</button>
+                  <button id="clear-btn" type="button" class="action-btn danger-btn">Clear</button>
+                </div>
+                <div class="button-row tool-row" role="toolbar" aria-label="Tool selection">
+                  <button type="button" class="tool-btn is-active" data-tool="brush">1 Brush</button>
+                  <button type="button" class="tool-btn" data-tool="spray">2 Spray</button>
+                  <button type="button" class="tool-btn" data-tool="gaussian">3 Gaussian</button>
+                  <button type="button" class="tool-btn" data-tool="line">4 Line</button>
+                  <button type="button" class="tool-btn" data-tool="erase">5 Erase</button>
+                </div>
+              </div>
+
+              <div id="editor-resize-shell" class="editor-resize-shell">
+                <div class="canvas-frame">
+                  <canvas id="spectrogram-canvas" width="1120" height="640" aria-label="Spectrogram editor canvas"></canvas>
+                </div>
+              </div>
+
+              <div class="status-bar">
+                <span id="status-text">Ready. Press Play to render and listen.</span>
+                <span id="cursor-readout">t = 0.00 s | f = 440 Hz | a = 0.00</span>
+              </div>
+
+              <div class="timeline-bar" aria-label="Timeline viewport">
+                <label class="timeline-label" for="timeline-track">
+                  <span>Visible window</span>
+                  <output id="timeline-out">0.00 s - 6.00 s</output>
+                </label>
+                <div id="timeline-track" class="timeline-track" role="scrollbar" aria-label="Timeline scrollbar" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0">
+                  <div id="timeline-thumb" class="timeline-thumb"></div>
+                </div>
+              </div>
+            </div>
+
+            <aside class="control-panel" aria-label="Editor controls">
+              <section class="control-card">
+                <h3>Preset</h3>
+                <label class="control-stack">
+                  <span>Load drawing preset</span>
+                  <div class="inline-row">
+                    <select id="preset-select">
+                      <option value="riser">Rising line</option>
+                      <option value="chord-bloom">Chord bloom</option>
+                      <option value="rain">Spectral rain</option>
+                      <option value="pulse-lattice">Pulse lattice</option>
+                    </select>
+                    <button id="preset-btn" type="button" class="action-btn">Load</button>
+                  </div>
+                </label>
+              </section>
+
+              <section class="control-card">
+                <h3>Bass Line</h3>
+                <label class="control-stack">
+                  <span>Load bass-line backing</span>
+                  <div class="inline-row">
+                    <select id="bassline-select">
+                      <option value="none">Empty bass line</option>
+                      <option value="dub-foundation">Dub foundation</option>
+                      <option value="four-floor">Four on the floor</option>
+                      <option value="halfstep-wobble">Half-step wobble</option>
+                      <option value="electro-break">Electro break</option>
+                    </select>
+                    <button id="bassline-btn" type="button" class="action-btn">Load</button>
+                  </div>
+                </label>
+                <label class="control-stack">
+                  <span>Bass-line BPM: <output id="bassline-bpm-out">132</output></span>
+                  <input id="bassline-bpm-input" type="range" min="80" max="500" step="1" value="220" />
+                </label>
+                <button id="clear-bassline-btn" type="button" class="action-btn">Clear Bass Line</button>
+                <p class="card-note">These presets include bass movement plus kick, snare, and hat-like transients.</p>
+              </section>
+
+              <section class="control-card">
+                <h3>Synthesis</h3>
+                <label class="control-stack">
+                  <span>Render mode</span>
+                  <span>Pure glide sine</span>
+                </label>
+                <label class="control-stack">
+                  <span>Duration: <output id="duration-out">6.0 s</output></span>
+                  <input id="duration-input" type="range" min="1" max="60" step="0.25" value="6" />
+                </label>
+                <label class="control-stack">
+                  <span>Min frequency: <output id="minfreq-out">80 Hz</output></span>
+                  <input id="minfreq-input" type="range" min="30" max="500" step="5" value="80" />
+                </label>
+                <label class="control-stack">
+                  <span>Max frequency: <output id="maxfreq-out">3200 Hz</output></span>
+                  <input id="maxfreq-input" type="range" min="1200" max="8000" step="50" value="3200" />
+                </label>
+                <label class="control-stack">
+                  <span>Playback gain: <output id="gain-out">0.65</output></span>
+                  <input id="gain-input" type="range" min="0.1" max="1" step="0.01" value="0.65" />
+                </label>
+                <label class="check-row">
+                  <input id="grid-toggle" type="checkbox" checked />
+                  <span>Show grid</span>
+                </label>
+                <p class="card-note">Use pure glide for a single clean rising or falling sinusoid. Polyphonic drawings automatically lean back toward the spectral renderer.</p>
+              </section>
+
+              <section class="control-card">
+                <h3>Brush</h3>
+                <label class="control-stack">
+                  <span>Size: <output id="size-out">18 px</output></span>
+                  <input id="size-input" type="range" min="4" max="64" step="1" value="18" />
+                </label>
+                <label class="control-stack">
+                  <span>Strength: <output id="strength-out">0.70</output></span>
+                  <input id="strength-input" type="range" min="0.05" max="1" step="0.01" value="0.7" />
+                </label>
+                <label class="control-stack">
+                  <span>Spray density: <output id="density-out">18</output></span>
+                  <input id="density-input" type="range" min="2" max="40" step="1" value="18" />
+                </label>
+              </section>
+
+              <section class="control-card shortcuts-card">
+                <h3>Shortcuts</h3>
+                <p><code>1..5</code> tool, <code>[</code>/<code>]</code> size, <code>-</code>/<code>=</code> strength</p>
+                <p><code>Space</code> play/pause, <code>S</code> stop, <code>C</code> clear, <code>G</code> grid</p>
+                <p><code>Shift</code> while using line snaps to horizontal or vertical</p>
+              </section>
+            </aside>
+          </section>
+        </div>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      Last modified: <time id="last-modified">Loading...</time>
+    </footer>
+  </div>
+  <script>
+    window.__spectrogramBooted = false;
+    window.__spectrogramBootError = "";
+
+    window.addEventListener("error", function (event) {
+      if (window.__spectrogramBooted || window.__spectrogramBootError) {
+        return;
+      }
+      window.__spectrogramBootError = event && event.message ? event.message : "Unknown JavaScript error";
+      var statusEl = document.getElementById("status-text");
+      if (statusEl) {
+        statusEl.textContent = "Editor error: " + window.__spectrogramBootError;
+      }
+    });
+
+    window.addEventListener("unhandledrejection", function (event) {
+      if (window.__spectrogramBooted || window.__spectrogramBootError) {
+        return;
+      }
+      var reason = event && event.reason ? event.reason : "Unhandled promise rejection";
+      var message = typeof reason === "string" ? reason : (reason && reason.message ? reason.message : String(reason));
+      window.__spectrogramBootError = message;
+      var statusEl = document.getElementById("status-text");
+      if (statusEl) {
+        statusEl.textContent = "Editor error: " + message;
+      }
+    });
+
+    window.addEventListener("load", function () {
+      if (!window.__spectrogramBooted && !window.__spectrogramBootError) {
+        var statusEl = document.getElementById("status-text");
+        if (statusEl) {
+          statusEl.textContent = "Editor script did not start. Reload the page or open it through your local web server.";
+        }
+      }
+    });
+  </script>
+  <script src="./app.js?v=20260516-2" onerror="window.__spectrogramBootError='Failed to load app.js';var statusEl=document.getElementById('status-text');if(statusEl){statusEl.textContent='Editor error: Failed to load app.js';}"></script>
+  <script src="../../last-modified.js"></script>
+</body>
+</html>
