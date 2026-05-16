@@ -58,6 +58,7 @@
     const playButton = document.getElementById("play-btn");
     const pauseButton = document.getElementById("pause-btn");
     const stopButton = document.getElementById("stop-btn");
+    const loopButton = document.getElementById("loop-btn");
     const renderButton = document.getElementById("render-btn");
     const exportButton = document.getElementById("export-btn");
     const undoButton = document.getElementById("undo-btn");
@@ -103,7 +104,7 @@
     const pianoHammerInput = document.getElementById("piano-hammer-input");
     const pianoCouplingInput = document.getElementById("piano-coupling-input");
     const editorViewSelect = document.getElementById("editor-view-select");
-    const loopToggle = document.getElementById("loop-toggle");
+    const frequencyAxisSelect = document.getElementById("frequency-axis-select");
     const gridToggle = document.getElementById("grid-toggle");
 
     const durationOut = document.getElementById("duration-out");
@@ -165,6 +166,11 @@
       pointerId: null,
       noteDurationUnlocked: false,
       noteUnlockCol: null,
+      scoreEditMode: null,
+      scoreEditIndex: -1,
+      scoreEditOriginalNote: null,
+      scoreEditStartPoint: null,
+      scoreEditStartMidi: null,
       dirty: true,
       renderedBuffer: null,
       renderedWav: null,
@@ -193,6 +199,7 @@
       scoreEvents: [],
       currentBasslinePreset: "none",
       editorView: "spectrogram",
+      frequencyAxis: frequencyAxisSelect ? frequencyAxisSelect.value || "log" : "log",
       renderMode: "geometry",
       showPhaseDiagnostics: false,
       loopPlayback: false,
@@ -204,6 +211,11 @@
       pendingUndoSnapshot: null,
       pendingUndoVersion: -1,
       toolSettingsOpen: false,
+      frequencyZoomReference: null,
+      scoreViewFreqs: {
+        "guitar-score": defaultFrequencyRangeForView("guitar-score"),
+        "piano-score": defaultFrequencyRangeForView("piano-score")
+      },
       freeMinFreq: Number(minFreqInput.value),
       freeMaxFreq: Number(maxFreqInput.value)
     };
@@ -249,7 +261,16 @@
   }
 
   function scoreAllowedNoteLengthsBeats() {
-    return [0.25, 0.5, 1, 2, 4];
+    const maxBeats = Math.max(8, durationSeconds() / Math.max(0.001, scoreBeatSeconds()));
+    const lengths = [];
+    for (let beats = 0.125; beats <= maxBeats + 1e-6; beats *= 2) {
+      lengths.push(Number(beats.toFixed(6)));
+    }
+    return lengths;
+  }
+
+  function minimumScoreNoteDurationSec() {
+    return Math.max(0.02, scoreQuantizationStepBeats() * scoreBeatSeconds());
   }
 
   function quantizeToStep(value, step) {
@@ -271,12 +292,31 @@
     return best;
   }
 
+  function nearestAllowedScoreLengthBeatsInRange(rawBeats, minBeats, maxBeats) {
+    const allowed = scoreAllowedNoteLengthsBeats().filter(
+      (beats) => beats >= minBeats - 1e-6 && beats <= maxBeats + 1e-6
+    );
+    if (!allowed.length) {
+      return clamp(rawBeats, minBeats, maxBeats);
+    }
+    let best = allowed[0];
+    let bestDistance = Math.abs(rawBeats - best);
+    for (let i = 1; i < allowed.length; i += 1) {
+      const candidate = allowed[i];
+      const distance = Math.abs(rawBeats - candidate);
+      if (distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
   function quantizedScoreDurationBeatsFromDrag(dragBeatsFromUnlock) {
     if (!state.noteDurationUnlocked) {
       return defaultScoreNoteLengthBeats();
     }
-    const candidateBeats = Math.max(scoreAllowedNoteLengthsBeats()[0], 1 + dragBeatsFromUnlock);
-    return nearestAllowedScoreLengthBeats(candidateBeats);
+    return Math.max(scoreAllowedNoteLengthsBeats()[0], 1 + dragBeatsFromUnlock);
   }
 
   function quantizedScoreNotePlacement(startPoint, endPoint) {
@@ -291,25 +331,29 @@
     const rawStartSec = timeFromCol(startCol);
     const beatSeconds = scoreBeatSeconds();
     const stepBeats = scoreQuantizationStepBeats();
-    const quantizedStartBeats = Math.max(0, quantizeToStep(rawStartSec / beatSeconds, stepBeats));
     const activationBeats = scoreNoteDragActivationBeats();
-    const rawDragBeats = Math.abs((timeFromCol(endCol) - rawStartSec) / beatSeconds);
+    const rawEndSec = timeFromCol(endCol);
+    const rawDragBeats = Math.abs((rawEndSec - rawStartSec) / beatSeconds);
     if (!state.noteDurationUnlocked && rawDragBeats > activationBeats) {
       state.noteDurationUnlocked = true;
       state.noteUnlockCol = endCol;
     }
-    const unlockCol = state.noteUnlockCol === null ? endCol : state.noteUnlockCol;
-    const dragBeatsFromUnlock = (timeFromCol(endCol) - timeFromCol(unlockCol)) / beatSeconds;
-    const quantizedDurationBeats = quantizedScoreDurationBeatsFromDrag(dragBeatsFromUnlock);
-    const startSec = clamp(quantizedStartBeats * beatSeconds, 0, Math.max(0, durationSeconds() - stepBeats * beatSeconds));
-    const endSec = clamp(startSec + quantizedDurationBeats * beatSeconds, startSec + stepBeats * beatSeconds, durationSeconds());
+    const startSec = clamp(rawStartSec, 0, Math.max(0, durationSeconds() - minimumScoreNoteDurationSec()));
+    let endSec = clamp(
+      startSec + defaultScoreNoteLengthBeats() * beatSeconds,
+      startSec + minimumScoreNoteDurationSec(),
+      durationSeconds()
+    );
+    if (state.noteDurationUnlocked) {
+      endSec = clamp(rawEndSec, startSec + minimumScoreNoteDurationSec(), durationSeconds());
+    }
     return {
       midi: endSnap.midi,
       startSec,
       endSec,
       startCol: colFromTime(startSec),
       endCol: colFromTime(endSec),
-      durationBeats: quantizedDurationBeats
+      durationBeats: (endSec - startSec) / beatSeconds
     };
   }
 
@@ -404,6 +448,10 @@
     return SCORE_VIEW_PROFILES[state.editorView] || null;
   }
 
+  function scoreViewLabel(view = state.editorView) {
+    return SCORE_VIEW_PROFILES[view]?.label || "score sheet";
+  }
+
   function isScoreSheetMode() {
     return Boolean(currentScoreProfile());
   }
@@ -437,33 +485,210 @@
     };
   }
 
-  function effectiveMinFrequency() {
+  function defaultFrequencyRangeForView(view) {
+    const profile = SCORE_VIEW_PROFILES[view];
+    if (!profile) {
+      return {
+        min: Number(minFreqInput.value),
+        max: Number(maxFreqInput.value)
+      };
+    }
+    return {
+      min: midiToFreq(profile.minMidi - profile.padSemitones),
+      max: midiToFreq(profile.maxMidi + profile.padSemitones)
+    };
+  }
+
+  function frequencyBoundsForCurrentView() {
     const profile = currentScoreProfile();
-    return profile
-      ? midiToFreq(profile.minMidi - profile.padSemitones)
-      : Number(minFreqInput.value);
+    if (profile) {
+      const range = defaultFrequencyRangeForView(state.editorView);
+      return {
+        min: range.min,
+        max: range.max
+      };
+    }
+    return {
+      min: Number(minFreqInput.min) || 20,
+      max: Number(maxFreqInput.max) || 8000
+    };
+  }
+
+  function frequencyAxisMode() {
+    return state.frequencyAxis === "linear" ? "linear" : "log";
+  }
+
+  function frequencyAxisName(mode = frequencyAxisMode()) {
+    return mode === "linear" ? "Equal-spaced" : "Logarithmic";
+  }
+
+  function axisValueFromFrequency(freq, mode = frequencyAxisMode()) {
+    if (mode === "linear") {
+      return freq;
+    }
+    return Math.log(Math.max(freq, 1e-6));
+  }
+
+  function frequencyFromAxisValue(value, mode = frequencyAxisMode()) {
+    if (mode === "linear") {
+      return value;
+    }
+    return Math.exp(value);
+  }
+
+  function minimumFrequencySpan(bounds, mode = frequencyAxisMode()) {
+    if (mode === "linear") {
+      return Math.max(2, (bounds.max - bounds.min) / 800);
+    }
+    return Math.log(2) / 12;
+  }
+
+  function sanitizeFrequencyRange(minValue, maxValue) {
+    const bounds = frequencyBoundsForCurrentView();
+    const axisMode = frequencyAxisMode();
+    const minSpan = minimumFrequencySpan(bounds, axisMode);
+    let min = clamp(minValue, bounds.min, bounds.max);
+    let max = clamp(maxValue, bounds.min, bounds.max);
+    if (max <= min) {
+      max = Math.min(bounds.max, min + minSpan);
+    }
+    const axisMin = axisValueFromFrequency(min, axisMode);
+    const axisMax = axisValueFromFrequency(Math.max(max, min + 1e-6), axisMode);
+    const span = axisMax - axisMin;
+    if (span < minSpan) {
+      const anchor = axisMode === "linear"
+        ? (min + max) * 0.5
+        : Math.sqrt(min * max);
+      let nextMin = frequencyFromAxisValue(axisValueFromFrequency(anchor, axisMode) - minSpan * 0.5, axisMode);
+      let nextMax = frequencyFromAxisValue(axisValueFromFrequency(anchor, axisMode) + minSpan * 0.5, axisMode);
+      if (axisMode === "linear" && nextMin < bounds.min) {
+        const shift = bounds.min - nextMin;
+        nextMin += shift;
+        nextMax += shift;
+      } else if (axisMode !== "linear" && nextMin < bounds.min) {
+        const scale = bounds.min / nextMin;
+        nextMin *= scale;
+        nextMax *= scale;
+      }
+      if (axisMode === "linear" && nextMax > bounds.max) {
+        const shift = nextMax - bounds.max;
+        nextMin -= shift;
+        nextMax -= shift;
+      } else if (axisMode !== "linear" && nextMax > bounds.max) {
+        const scale = bounds.max / nextMax;
+        nextMin *= scale;
+        nextMax *= scale;
+      }
+      min = clamp(nextMin, bounds.min, bounds.max);
+      max = clamp(nextMax, bounds.min, bounds.max);
+    }
+    return { min, max };
+  }
+
+  function rememberCurrentFrequencyRange(minValue, maxValue) {
+    if (isScoreSheetMode()) {
+      state.scoreViewFreqs[state.editorView] = { min: minValue, max: maxValue };
+    } else {
+      state.freeMinFreq = minValue;
+      state.freeMaxFreq = maxValue;
+    }
+  }
+
+  function rowForFrequencyInRange(freq, minValue, maxValue, mode = frequencyAxisMode()) {
+    const clamped = clamp(freq, minValue, maxValue);
+    const minAxis = axisValueFromFrequency(minValue, mode);
+    const maxAxis = axisValueFromFrequency(Math.max(maxValue, minValue + 1e-6), mode);
+    const freqAxis = axisValueFromFrequency(clamped, mode);
+    const ratio = (freqAxis - minAxis) / Math.max(1e-6, maxAxis - minAxis);
+    return clamp((1 - ratio) * (GRID_ROWS - 1), 0, GRID_ROWS - 1);
+  }
+
+  function frequencyForRowInRange(row, minValue, maxValue, mode = frequencyAxisMode()) {
+    const ratio = 1 - row / (GRID_ROWS - 1);
+    const minAxis = axisValueFromFrequency(minValue, mode);
+    const maxAxis = axisValueFromFrequency(Math.max(maxValue, minValue + 1e-6), mode);
+    return frequencyFromAxisValue(lerp(minAxis, maxAxis, ratio), mode);
+  }
+
+  function sampleLayerAtFractionalRow(layer, col, row) {
+    const row0 = clamp(Math.floor(row), 0, GRID_ROWS - 1);
+    const row1 = clamp(row0 + 1, 0, GRID_ROWS - 1);
+    const frac = clamp(row - row0, 0, 1);
+    const v0 = amplitudeAt(layer, col, row0);
+    const v1 = amplitudeAt(layer, col, row1);
+    return lerp(v0, v1, frac);
+  }
+
+  function remapLayerFrequencyRange(source, target, oldMin, oldMax, newMin, newMax, oldMode = frequencyAxisMode(), newMode = frequencyAxisMode()) {
+    if (!(oldMin > 0 && oldMax > oldMin && newMin > 0 && newMax > newMin)) {
+      return;
+    }
+    for (let col = 0; col < GRID_COLS; col += 1) {
+      for (let row = 0; row < GRID_ROWS; row += 1) {
+        const targetFreq = frequencyForRowInRange(row, newMin, newMax, newMode);
+        const sourceRow = rowForFrequencyInRange(targetFreq, oldMin, oldMax, oldMode);
+        target[gridIndex(col, row)] = sampleLayerAtFractionalRow(source, col, sourceRow);
+      }
+    }
+  }
+
+  function setFrequencyRange(minValue, maxValue) {
+    const oldMin = effectiveMinFrequency();
+    const oldMax = effectiveMaxFrequency();
+    const range = sanitizeFrequencyRange(minValue, maxValue);
+    if (Math.abs(range.min - oldMin) > 1e-6 || Math.abs(range.max - oldMax) > 1e-6) {
+      if (!state.frequencyZoomReference) {
+        state.frequencyZoomReference = {
+          drawData: drawData.slice(),
+          basslineData: basslineData.slice(),
+          min: oldMin,
+          max: oldMax
+        };
+      }
+      remapLayerFrequencyRange(
+        state.frequencyZoomReference.drawData,
+        drawData,
+        state.frequencyZoomReference.min,
+        state.frequencyZoomReference.max,
+        range.min,
+        range.max,
+        frequencyAxisMode(),
+        frequencyAxisMode()
+      );
+      remapLayerFrequencyRange(
+        state.frequencyZoomReference.basslineData,
+        basslineData,
+        state.frequencyZoomReference.min,
+        state.frequencyZoomReference.max,
+        range.min,
+        range.max,
+        frequencyAxisMode(),
+        frequencyAxisMode()
+      );
+    }
+    minFreqInput.value = String(Math.round(range.min));
+    maxFreqInput.value = String(Math.round(range.max));
+    rememberCurrentFrequencyRange(range.min, range.max);
+  }
+
+  function effectiveMinFrequency() {
+    return Number(minFreqInput.value);
   }
 
   function effectiveMaxFrequency() {
-    const profile = currentScoreProfile();
-    return profile
-      ? midiToFreq(profile.maxMidi + profile.padSemitones)
-      : Number(maxFreqInput.value);
+    return Number(maxFreqInput.value);
   }
 
   function applyEditorViewSettings() {
     const profile = currentScoreProfile();
     if (profile) {
-      minFreqInput.value = String(Math.round(midiToFreq(profile.minMidi)));
-      maxFreqInput.value = String(Math.round(midiToFreq(profile.maxMidi)));
-      minFreqInput.disabled = true;
-      maxFreqInput.disabled = true;
+      const remembered = state.scoreViewFreqs[state.editorView] || defaultFrequencyRangeForView(state.editorView);
+      setFrequencyRange(remembered.min, remembered.max);
     } else {
-      minFreqInput.disabled = false;
-      maxFreqInput.disabled = false;
-      minFreqInput.value = String(Math.round(state.freeMinFreq));
-      maxFreqInput.value = String(Math.round(state.freeMaxFreq));
+      setFrequencyRange(state.freeMinFreq, state.freeMaxFreq);
     }
+    minFreqInput.disabled = false;
+    maxFreqInput.disabled = false;
   }
 
   function defaultBasslineBpm(name) {
@@ -574,6 +799,17 @@
       || state.renderMode === "griffin"
       || state.renderMode === "hybrid"
     );
+  }
+
+  function releaseEnvelope(time, duration, releaseSeconds) {
+    if (time >= duration) {
+      return 0;
+    }
+    const tailStart = Math.max(0, duration - releaseSeconds);
+    if (time <= tailStart) {
+      return 1;
+    }
+    return 1 - (time - tailStart) / Math.max(0.0001, duration - tailStart);
   }
 
   function setRenderOverlay(active, options = {}) {
@@ -698,6 +934,28 @@
     }
   }
 
+  function zoomFrequencyAtRow(anchorRow, zoomFactor) {
+    const currentMin = effectiveMinFrequency();
+    const currentMax = Math.max(currentMin + 1, effectiveMaxFrequency());
+    const anchorFreq = freqFromRow(anchorRow);
+    const axisMode = frequencyAxisMode();
+    const axisMin = axisValueFromFrequency(currentMin, axisMode);
+    const axisMax = axisValueFromFrequency(currentMax, axisMode);
+    const currentSpan = axisMax - axisMin;
+    const nextSpan = currentSpan * zoomFactor;
+    const anchorAxis = axisValueFromFrequency(anchorFreq, axisMode);
+    const anchorRatio = clamp((anchorAxis - axisMin) / Math.max(1e-6, currentSpan), 0, 1);
+    const nextAxisMin = anchorAxis - anchorRatio * nextSpan;
+    const nextAxisMax = anchorAxis + (1 - anchorRatio) * nextSpan;
+    setFrequencyRange(
+      frequencyFromAxisValue(nextAxisMin, axisMode),
+      frequencyFromAxisValue(nextAxisMax, axisMode)
+    );
+    updateOutputs();
+    markDirty({ resetFrequencyReference: false });
+    renderCanvas();
+  }
+
   function zoomViewAtColumn(anchorCol, zoomFactor) {
     const oldSpan = visibleColCount();
     const nextSpan = clamp(
@@ -733,16 +991,142 @@
     return Math.abs(point.col - playheadColumn()) <= thresholdCols;
   }
 
-  function updateCanvasCursor(point) {
-    canvas.style.cursor = isNearPlayhead(point) ? "ew-resize" : defaultCanvasCursor();
+  function scoreNoteGeometry(note) {
+    const startCol = colFromTime(note.startSec);
+    const endCol = Math.max(startCol + 1, colFromTime(note.startSec + note.durationSec));
+    const topRow = rowFromFreq(midiToFreq(note.midi + 0.48));
+    const bottomRow = rowFromFreq(midiToFreq(note.midi - 0.48));
+    return {
+      startCol,
+      endCol,
+      minRow: Math.min(topRow, bottomRow),
+      maxRow: Math.max(topRow, bottomRow)
+    };
   }
 
-  function markDirty() {
+  function hitTestScoreNote(point) {
+    if (!point || !isScoreSheetMode() || !state.scoreEvents.length) {
+      return null;
+    }
+    const edgeThresholdCols = Math.max(2, (10 / plotWidth()) * visibleColCount());
+    const rowThreshold = 2.2;
+    for (let index = state.scoreEvents.length - 1; index >= 0; index -= 1) {
+      const note = state.scoreEvents[index];
+      const geometry = scoreNoteGeometry(note);
+      const withinRows = point.row >= geometry.minRow - rowThreshold && point.row <= geometry.maxRow + rowThreshold;
+      if (!withinRows) {
+        continue;
+      }
+      const withinCols = point.col >= geometry.startCol - edgeThresholdCols && point.col <= geometry.endCol + edgeThresholdCols;
+      if (!withinCols) {
+        continue;
+      }
+      let mode = "move";
+      if (Math.abs(point.col - geometry.startCol) <= edgeThresholdCols) {
+        mode = "resize-left";
+      } else if (Math.abs(point.col - geometry.endCol) <= edgeThresholdCols) {
+        mode = "resize-right";
+      } else if (point.col < geometry.startCol || point.col > geometry.endCol) {
+        continue;
+      }
+      return {
+        index,
+        mode,
+        note,
+        geometry
+      };
+    }
+    return null;
+  }
+
+  function applyScoreNoteEdit(point) {
+    if (!state.scoreEditOriginalNote || state.scoreEditIndex < 0 || !point) {
+      return false;
+    }
+    const original = state.scoreEditOriginalNote;
+    const minDuration = minimumScoreNoteDurationSec();
+    const trackDuration = durationSeconds();
+    let nextNote = { ...original };
+
+    if (state.scoreEditMode === "move") {
+      const deltaSec = timeFromCol(point.col) - timeFromCol(state.scoreEditStartPoint.col);
+      const nextMidi = nearestScoreMidiForPoint(point);
+      const deltaMidi = nextMidi === null || state.scoreEditStartMidi === null ? 0 : nextMidi - state.scoreEditStartMidi;
+      const duration = original.durationSec;
+      nextNote.startSec = clamp(original.startSec + deltaSec, 0, Math.max(0, trackDuration - duration));
+      nextNote.durationSec = duration;
+      nextNote.midi = clamp(original.midi + deltaMidi, currentScoreProfile().minMidi, currentScoreProfile().maxMidi);
+    } else if (state.scoreEditMode === "resize-left") {
+      const noteEnd = original.startSec + original.durationSec;
+      const rawStartSec = clamp(timeFromCol(point.col), 0, noteEnd - minDuration);
+      const rawDurationBeats = (noteEnd - rawStartSec) / scoreBeatSeconds();
+      const maxDurationBeats = noteEnd / scoreBeatSeconds();
+      const snappedDurationBeats = nearestAllowedScoreLengthBeatsInRange(
+        rawDurationBeats,
+        minimumScoreNoteDurationSec() / scoreBeatSeconds(),
+        maxDurationBeats
+      );
+      const snappedDurationSec = snappedDurationBeats * scoreBeatSeconds();
+      nextNote.startSec = clamp(noteEnd - snappedDurationSec, 0, noteEnd - minDuration);
+      nextNote.durationSec = noteEnd - nextNote.startSec;
+    } else if (state.scoreEditMode === "resize-right") {
+      const rawEndSec = clamp(timeFromCol(point.col), original.startSec + minDuration, trackDuration);
+      const rawDurationBeats = (rawEndSec - original.startSec) / scoreBeatSeconds();
+      const maxDurationBeats = (trackDuration - original.startSec) / scoreBeatSeconds();
+      const snappedDurationBeats = nearestAllowedScoreLengthBeatsInRange(
+        rawDurationBeats,
+        minimumScoreNoteDurationSec() / scoreBeatSeconds(),
+        maxDurationBeats
+      );
+      nextNote.durationSec = snappedDurationBeats * scoreBeatSeconds();
+    } else {
+      return false;
+    }
+
+    const changed = (
+      Math.abs(nextNote.startSec - state.scoreEvents[state.scoreEditIndex].startSec) > 1e-6
+      || Math.abs(nextNote.durationSec - state.scoreEvents[state.scoreEditIndex].durationSec) > 1e-6
+      || nextNote.midi !== state.scoreEvents[state.scoreEditIndex].midi
+    );
+    if (changed) {
+      state.scoreEvents[state.scoreEditIndex] = nextNote;
+    }
+    return changed;
+  }
+
+  function updateCanvasCursor(point) {
+    if (state.scoreEditMode === "move") {
+      canvas.style.cursor = "grabbing";
+      return;
+    }
+    if (state.scoreEditMode === "resize-left" || state.scoreEditMode === "resize-right") {
+      canvas.style.cursor = "ew-resize";
+      return;
+    }
+    if (isNearPlayhead(point)) {
+      canvas.style.cursor = "ew-resize";
+      return;
+    }
+    if (state.tool === "note") {
+      const hit = hitTestScoreNote(point);
+      if (hit) {
+        canvas.style.cursor = hit.mode === "move" ? "grab" : "ew-resize";
+        return;
+      }
+    }
+    canvas.style.cursor = defaultCanvasCursor();
+  }
+
+  function markDirty(options = {}) {
+    const { resetFrequencyReference = true } = options;
     state.dirty = true;
     state.renderedBuffer = null;
     state.renderedWav = null;
     state.dataVersion += 1;
     state.diagnosticsCache = null;
+    if (resetFrequencyReference) {
+      state.frequencyZoomReference = null;
+    }
   }
 
   function clearImportedScoreEvents() {
@@ -929,12 +1313,11 @@
     }
     const minFreq = minFrequency();
     const maxFreq = maxFrequency();
-    const scoreProfile = currentScoreProfile();
-    minFreqOut.textContent = scoreProfile
-      ? `${Math.round(midiToFreq(scoreProfile.minMidi))} Hz (${noteNameFromMidi(scoreProfile.minMidi)})`
+    minFreqOut.textContent = isScoreSheetMode()
+      ? `${Math.round(minFreq)} Hz (${noteNameFromMidi(freqToMidi(minFreq))})`
       : `${Math.round(minFreq)} Hz`;
-    maxFreqOut.textContent = scoreProfile
-      ? `${Math.round(midiToFreq(scoreProfile.maxMidi))} Hz (${noteNameFromMidi(scoreProfile.maxMidi)})`
+    maxFreqOut.textContent = isScoreSheetMode()
+      ? `${Math.round(maxFreq)} Hz (${noteNameFromMidi(freqToMidi(maxFreq))})`
       : `${Math.round(maxFreq)} Hz`;
     gainOut.textContent = Number(gainInput.value).toFixed(2);
     sizeOut.textContent = `${Math.round(Number(sizeInput.value))} px`;
@@ -957,6 +1340,10 @@
       renderModeSelect.value = state.renderMode;
       renderModeSelect.title = renderModeDescription(state.renderMode);
     }
+    if (frequencyAxisSelect) {
+      frequencyAxisSelect.value = frequencyAxisMode();
+      frequencyAxisSelect.title = `${frequencyAxisName()} frequency axis`;
+    }
     if (renderModeLabel) {
       renderModeLabel.textContent = `Render mode: ${renderModeName(state.renderMode)}`;
     }
@@ -965,9 +1352,6 @@
     }
     if (phaseDiagnosticsToggle) {
       phaseDiagnosticsToggle.checked = state.showPhaseDiagnostics;
-    }
-    if (loopToggle) {
-      loopToggle.checked = state.loopPlayback;
     }
     if (playButton) {
       playButton.classList.toggle("is-engaged", state.isPlaying && !state.isPaused);
@@ -980,6 +1364,11 @@
     }
     if (stopButton) {
       stopButton.classList.toggle("is-engaged", !state.isPlaying && !state.isPaused && state.playheadRatio <= 0);
+    }
+    if (loopButton) {
+      loopButton.classList.toggle("is-engaged", state.loopPlayback);
+      loopButton.setAttribute("aria-pressed", state.loopPlayback ? "true" : "false");
+      loopButton.title = state.loopPlayback ? "Loop playback on" : "Loop playback off";
     }
     const noteToolButton = toolButtons.find((button) => button.dataset.tool === "note");
     if (noteToolButton) {
@@ -1022,16 +1411,13 @@
   function freqFromRow(row) {
     const minFreq = effectiveMinFrequency();
     const maxFreq = Math.max(minFreq + 1, effectiveMaxFrequency());
-    const ratio = 1 - row / (GRID_ROWS - 1);
-    return minFreq * Math.pow(maxFreq / minFreq, ratio);
+    return frequencyForRowInRange(row, minFreq, maxFreq, frequencyAxisMode());
   }
 
   function rowFromFreq(freq) {
     const minFreq = effectiveMinFrequency();
     const maxFreq = Math.max(minFreq + 1, effectiveMaxFrequency());
-    const clamped = clamp(freq, minFreq, maxFreq);
-    const ratio = Math.log(clamped / minFreq) / Math.log(maxFreq / minFreq);
-    return clamp(Math.round((1 - ratio) * (GRID_ROWS - 1)), 0, GRID_ROWS - 1);
+    return Math.round(rowForFrequencyInRange(freq, minFreq, maxFreq, frequencyAxisMode()));
   }
 
   function colFromTime(seconds) {
@@ -1399,7 +1785,7 @@
   }
 
   function drawPointerPreview() {
-    if (!state.pointerInside || !state.currentPointer || state.tool === "line") {
+    if (!state.pointerInside || !state.currentPointer || state.tool === "line" || state.tool === "note") {
       return;
     }
     const point = gridToCanvas(state.currentPointer.col, state.currentPointer.row);
@@ -2969,17 +3355,6 @@
       return clamp(Math.floor(seconds * RENDER_SAMPLE_RATE), 0, Math.max(0, totalSamples - 1));
     }
 
-    function releaseEnvelope(time, duration, releaseSeconds) {
-      if (time >= duration) {
-        return 0;
-      }
-      const tailStart = Math.max(0, duration - releaseSeconds);
-      if (time <= tailStart) {
-        return 1;
-      }
-      return 1 - (time - tailStart) / Math.max(0.0001, duration - tailStart);
-    }
-
     for (const event of state.bassEvents) {
       const startSample = sampleIndexAt(event.time);
 
@@ -3082,17 +3457,15 @@
     const duration = Math.max(0.02, note.durationSec);
     const releaseSeconds = Math.min(0.14, duration * 0.2);
     const attackSeconds = 0.004;
+    const gain = 0.22 + velocity * 0.78;
 
     for (let i = 0; i < sampleLength; i += 1) {
       const time = i / RENDER_SAMPLE_RATE;
-      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
       phase1 += (TAU * freq) / RENDER_SAMPLE_RATE;
 
       const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
-      const releaseStart = Math.max(0, duration - releaseSeconds);
-      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
-      const sustainEnv = (0.98 - noteT * 0.12) * Math.exp(-time * 0.52);
-      const env = attackEnv * releaseEnv * Math.max(0, sustainEnv) * (0.22 + velocity * 0.78);
+      const releaseEnv = releaseEnvelope(time, duration, releaseSeconds);
+      const env = attackEnv * releaseEnv * gain;
       const body = Math.sin(phase1);
       output[startSample + i] += env * body;
     }
@@ -3106,19 +3479,18 @@
     const duration = Math.max(0.02, note.durationSec);
     const releaseSeconds = Math.min(0.12, duration * 0.22);
     const attackSeconds = 0.003;
+    const gain = 0.2 + velocity * 0.8;
 
     for (let i = 0; i < sampleLength; i += 1) {
       const time = i / RENDER_SAMPLE_RATE;
-      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
       phase1 += (TAU * freq) / RENDER_SAMPLE_RATE;
       phase2 += (TAU * freq * 1.997) / RENDER_SAMPLE_RATE;
       phase3 += (TAU * freq * 2.99) / RENDER_SAMPLE_RATE;
       phase4 += (TAU * freq * 4.03) / RENDER_SAMPLE_RATE;
 
       const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
-      const releaseStart = Math.max(0, duration - releaseSeconds);
-      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
-      const env = attackEnv * releaseEnv * Math.exp(-time * 0.78) * (0.2 + velocity * 0.8) * (0.95 - noteT * 0.14);
+      const releaseEnv = releaseEnvelope(time, duration, releaseSeconds);
+      const env = attackEnv * releaseEnv * gain;
       const body = Math.sin(phase1) * 0.72 + Math.sin(phase2) * 0.18 + Math.sin(phase3) * 0.08 + Math.sin(phase4) * 0.04;
       output[startSample + i] += env * body;
     }
@@ -3130,6 +3502,8 @@
     const detunes = new Float64Array(harmonicCount);
     const duration = Math.max(0.02, note.durationSec);
     const releaseSeconds = Math.min(0.18, duration * 0.26);
+    const attackSeconds = 0.0035;
+    const gain = 0.24 + velocity * 0.76;
 
     for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
       phases[harmonic] = deterministicPhase(note.midi * (harmonic + 1) * 0.61 + note.startSec * 7.3 + harmonic * 11.1);
@@ -3138,10 +3512,9 @@
 
     for (let i = 0; i < sampleLength; i += 1) {
       const time = i / RENDER_SAMPLE_RATE;
-      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
-      const releaseStart = Math.max(0, duration - releaseSeconds);
-      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
-      const env = releaseEnv * Math.exp(-time * 0.48) * (0.24 + velocity * 0.76) * (0.98 - noteT * 0.08);
+      const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
+      const releaseEnv = releaseEnvelope(time, duration, releaseSeconds);
+      const env = attackEnv * releaseEnv * gain;
       let body = 0;
       for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
         const n = harmonic + 1;
@@ -3160,6 +3533,8 @@
     let noiseMemory = 0;
     const duration = Math.max(0.02, note.durationSec);
     const releaseSeconds = Math.min(0.18, duration * 0.28);
+    const attackSeconds = 0.003;
+    const gain = 0.28 + velocity * 0.72;
 
     for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
       phases[harmonic] = deterministicPhase(note.midi * (harmonic + 1) * 0.83 + note.startSec * 9.1 + harmonic * 5.3);
@@ -3168,10 +3543,8 @@
 
     for (let i = 0; i < sampleLength; i += 1) {
       const time = i / RENDER_SAMPLE_RATE;
-      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
-      const releaseStart = Math.max(0, duration - releaseSeconds);
-      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
-      const smearEnv = Math.exp(-time * 0.34) * (0.28 + velocity * 0.72);
+      const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
+      const releaseEnv = releaseEnvelope(time, duration, releaseSeconds);
       let body = 0;
       for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
         const n = harmonic + 1;
@@ -3182,7 +3555,7 @@
       const rawNoise = deterministicNoise((startSample + i) * 0.91 + note.midi * 3.7);
       noiseMemory = noiseMemory * 0.78 + rawNoise * 0.22;
       const airy = (rawNoise - noiseMemory) * Math.exp(-time * 26) * 0.045;
-      output[startSample + i] += releaseEnv * smearEnv * (body * 0.64 + airy) * (0.98 - noteT * 0.06);
+      output[startSample + i] += attackEnv * releaseEnv * gain * (body * 0.64 + airy);
     }
   }
 
@@ -3192,6 +3565,8 @@
     const smearedPhases = new Float64Array(harmonicCount);
     const duration = Math.max(0.02, note.durationSec);
     const releaseSeconds = Math.min(0.16, duration * 0.24);
+    const attackSeconds = 0.0035;
+    const gain = 0.24 + velocity * 0.76;
 
     for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
       coherentPhases[harmonic] = deterministicPhase(note.midi * (harmonic + 1) * 0.43 + note.startSec * 2.7);
@@ -3200,10 +3575,9 @@
 
     for (let i = 0; i < sampleLength; i += 1) {
       const time = i / RENDER_SAMPLE_RATE;
-      const noteT = sampleLength > 1 ? i / (sampleLength - 1) : 0;
-      const releaseStart = Math.max(0, duration - releaseSeconds);
-      const releaseEnv = time <= releaseStart ? 1 : 1 - (time - releaseStart) / Math.max(0.0001, duration - releaseStart);
-      const env = releaseEnv * Math.exp(-time * 0.56) * (0.24 + velocity * 0.76);
+      const attackEnv = time < attackSeconds ? time / Math.max(0.0005, attackSeconds) : 1;
+      const releaseEnv = releaseEnvelope(time, duration, releaseSeconds);
+      const env = attackEnv * releaseEnv * gain;
       let coherent = 0;
       let smeared = 0;
       for (let harmonic = 0; harmonic < harmonicCount; harmonic += 1) {
@@ -3214,7 +3588,7 @@
         coherent += Math.sin(coherentPhases[harmonic]) / Math.pow(n, 0.98);
         smeared += Math.sin(smearedPhases[harmonic]) / Math.pow(n, 0.78);
       }
-      output[startSample + i] += env * (coherent * 0.52 + smeared * 0.36) * (0.98 - noteT * 0.08);
+      output[startSample + i] += env * (coherent * 0.52 + smeared * 0.36);
     }
   }
 
@@ -3391,29 +3765,35 @@
       const velocity = clamp(note.velocity || 0.78, 0.18, 1);
       const freq = midiToFreq(note.midi);
 
-      switch (renderMode) {
-        case "independent":
-          addIndependentScoreNote(output, startSample, sampleLength, note, velocity, freq);
-          break;
-        case "spectral":
-          addSpectralScoreNote(output, startSample, sampleLength, note, velocity, freq);
-          break;
-        case "griffin":
-          addGriffinScoreNote(output, startSample, sampleLength, note, velocity, freq);
-          break;
-        case "hybrid":
-          addHybridScoreNote(output, startSample, sampleLength, note, velocity, freq);
-          break;
-        case "piano":
-          addPianoScoreNote(output, startSample, sampleLength, note, velocity, freq);
-          break;
-        case "guitar":
-          addGuitarScoreNote(output, startSample, sampleLength, note, velocity, freq);
-          break;
-        case "geometry":
-        default:
-          addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq);
-          break;
+      try {
+        switch (renderMode) {
+          case "independent":
+            addIndependentScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            break;
+          case "spectral":
+            addSpectralScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            break;
+          case "griffin":
+            addGriffinScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            break;
+          case "hybrid":
+            addHybridScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            break;
+          case "piano":
+            addPianoScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            break;
+          case "guitar":
+            addGuitarScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            break;
+          case "geometry":
+          default:
+            addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq);
+            break;
+        }
+      } catch (error) {
+        throw new Error(
+          `Failed to synthesize score note ${noteIndex + 1}/${state.scoreEvents.length} at ${note.startSec.toFixed(2)} s: ${error && error.message ? error.message : String(error)}`
+        );
       }
 
       if (maybeYield && await maybeYield()) {
@@ -3686,9 +4066,23 @@
   function fractionalRowFromFreq(freq) {
     const minFreq = minFrequency();
     const maxFreq = Math.max(minFreq + 1, maxFrequency());
-    const clampedFreq = clamp(freq, minFreq, maxFreq);
-    const ratio = Math.log(clampedFreq / minFreq) / Math.log(maxFreq / minFreq);
-    return clamp((1 - ratio) * (GRID_ROWS - 1), 0, GRID_ROWS - 1);
+    return rowForFrequencyInRange(freq, minFreq, maxFreq, frequencyAxisMode());
+  }
+
+  function setFrequencyAxisMode(nextMode) {
+    const normalized = nextMode === "linear" ? "linear" : "log";
+    const previous = frequencyAxisMode();
+    if (normalized === previous) {
+      return;
+    }
+    const minFreq = effectiveMinFrequency();
+    const maxFreq = effectiveMaxFrequency();
+    const drawSnapshot = drawData.slice();
+    const basslineSnapshot = basslineData.slice();
+    remapLayerFrequencyRange(drawSnapshot, drawData, minFreq, maxFreq, minFreq, maxFreq, previous, normalized);
+    remapLayerFrequencyRange(basslineSnapshot, basslineData, minFreq, maxFreq, minFreq, maxFreq, previous, normalized);
+    state.frequencyAxis = normalized;
+    state.frequencyZoomReference = null;
   }
 
   function drawAmplitudeAtFractional(colF, rowF) {
@@ -3893,50 +4287,59 @@
       progressEnd: scoreProgressEnd
     });
     const output = new Float32Array(totalSamples);
-    let tracks = extractDrawVoiceTracks(analysis);
+    const hasDrawEnergy = analysis.energy.some((value) => value > EPSILON);
+    let tracks = hasDrawEnergy ? extractDrawVoiceTracks(analysis) : [];
     let iterations = 0;
-    let drawRender;
+    let drawRender = {
+      samples: new Float32Array(totalSamples),
+      tracks,
+      iterations: 0
+    };
 
-    switch (state.renderMode) {
-      case "independent":
-        onProgress?.(rendererProgressStart, "Synthesizing independent oscillators");
-        drawRender = buildIndependentOscillatorAudioData(analysis, totalSamples, tracks);
-        break;
-      case "piano":
-        onProgress?.(rendererProgressStart, "Synthesizing piano-like resonances");
-        drawRender = buildPianoLikeAudioData(analysis, totalSamples, tracks);
-        break;
-      case "guitar":
-        onProgress?.(rendererProgressStart, "Synthesizing guitar-like plucks");
-        drawRender = buildGuitarLikeAudioData(analysis, totalSamples, tracks);
-        break;
-      case "spectral":
-        onProgress?.(rendererProgressStart, "Synthesizing spectral bins");
-        drawRender = buildSpectralBinAudioData(analysis, totalSamples);
-        break;
-      case "griffin":
-        onProgress?.(rendererProgressStart, "Initializing Griffin-Lim");
-        drawRender = await buildGriffinLimAudioData(analysis, totalSamples, {
-          tracks,
-          onProgress: (iteration, totalIterations) => {
-            onProgress?.(
-              lerp(rendererProgressStart, rendererProgressEnd, iteration / totalIterations),
-              `Griffin-Lim iteration ${iteration}/${totalIterations}`
-            );
-          }
-        });
-        break;
-      case "hybrid":
-        onProgress?.(rendererProgressStart, "Building hybrid seed");
-        drawRender = await buildHybridAudioData(analysis, totalSamples, tracks, (fraction, detail) => {
-          onProgress?.(lerp(rendererProgressStart, rendererProgressEnd, fraction), detail);
-        });
-        break;
-      case "geometry":
-      default:
-        onProgress?.(rendererProgressStart, "Synthesizing geometry coherence");
-        drawRender = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
-        break;
+    if (hasDrawEnergy) {
+      switch (state.renderMode) {
+        case "independent":
+          onProgress?.(rendererProgressStart, "Synthesizing independent oscillators");
+          drawRender = buildIndependentOscillatorAudioData(analysis, totalSamples, tracks);
+          break;
+        case "piano":
+          onProgress?.(rendererProgressStart, "Synthesizing piano-like resonances");
+          drawRender = buildPianoLikeAudioData(analysis, totalSamples, tracks);
+          break;
+        case "guitar":
+          onProgress?.(rendererProgressStart, "Synthesizing guitar-like plucks");
+          drawRender = buildGuitarLikeAudioData(analysis, totalSamples, tracks);
+          break;
+        case "spectral":
+          onProgress?.(rendererProgressStart, "Synthesizing spectral bins");
+          drawRender = buildSpectralBinAudioData(analysis, totalSamples);
+          break;
+        case "griffin":
+          onProgress?.(rendererProgressStart, "Initializing Griffin-Lim");
+          drawRender = await buildGriffinLimAudioData(analysis, totalSamples, {
+            tracks,
+            onProgress: (iteration, totalIterations) => {
+              onProgress?.(
+                lerp(rendererProgressStart, rendererProgressEnd, iteration / totalIterations),
+                `Griffin-Lim iteration ${iteration}/${totalIterations}`
+              );
+            }
+          });
+          break;
+        case "hybrid":
+          onProgress?.(rendererProgressStart, "Building hybrid seed");
+          drawRender = await buildHybridAudioData(analysis, totalSamples, tracks, (fraction, detail) => {
+            onProgress?.(lerp(rendererProgressStart, rendererProgressEnd, fraction), detail);
+          });
+          break;
+        case "geometry":
+        default:
+          onProgress?.(rendererProgressStart, "Synthesizing geometry coherence");
+          drawRender = buildGeometryCoherenceAudioData(analysis, totalSamples, tracks);
+          break;
+      }
+    } else {
+      onProgress?.(rendererProgressStart, "No freehand drawing layer to synthesize");
     }
 
     iterations = drawRender.iterations || 0;
@@ -3953,8 +4356,7 @@
     await normalizeAudioData(output, maybeYield);
     onProgress?.(0.992, "Applying output fade");
     await applyEdgeFade(output, maybeYield);
-    const scoreModeLabel = state.scoreEvents.length ? `${currentScoreProfile().label} note events` : "";
-    const hasDrawTracks = tracks.length > 0;
+    const scoreModeLabel = state.scoreEvents.length ? `${scoreViewLabel()} note events` : "";
     return {
       samples: output,
       iterations,
@@ -4082,6 +4484,10 @@
         const iterationSummary = renderResult.iterations > 0 ? ` · ${renderResult.iterations} iterations` : "";
         setStatus(`Rendered using: ${modeSummary} · ${elapsedMs.toFixed(1)} ms · ${samples.length} samples${iterationSummary}`);
         return buffer;
+      } catch (error) {
+        reportBootError(error);
+        setStatus(`Render failed: ${error && error.message ? error.message : String(error)}`);
+        throw error;
       } finally {
         const visibleMs = performance.now() - overlayStartedAt;
         if (visibleMs < 420) {
@@ -4562,7 +4968,7 @@
     resetUndoHistory();
     markDirty();
     stopPlayback(
-      `Imported ${parsedScore.notes.length} notes from ${parsedScore.format} into ${currentScoreProfile().label}${wasScaled ? ` (time-scaled to ${targetDuration} s)` : ""}.`
+      `Imported ${parsedScore.notes.length} notes from ${parsedScore.format} into ${scoreViewLabel(suggestedView)}${wasScaled ? ` (time-scaled to ${targetDuration} s)` : ""}.`
     );
     renderCanvas();
   }
@@ -4887,6 +5293,28 @@
       stopPlayback("Playback stopped for editing.");
     }
 
+    if (state.tool === "note") {
+      const scoreHit = hitTestScoreNote(point);
+      if (scoreHit) {
+        beginUndoGesture();
+        state.pointerId = event.pointerId;
+        state.drawing = true;
+        state.lastPointer = scorePoint || point;
+        state.currentPointer = scorePoint || point;
+        state.pointerInside = true;
+        state.scoreEditMode = scoreHit.mode;
+        state.scoreEditIndex = scoreHit.index;
+        state.scoreEditOriginalNote = { ...scoreHit.note };
+        state.scoreEditStartPoint = point;
+        state.scoreEditStartMidi = nearestScoreMidiForPoint(point);
+        updateCursorReadout(scorePoint || point);
+        canvas.setPointerCapture(event.pointerId);
+        updateCanvasCursor(scorePoint || point);
+        renderCanvas();
+        return;
+      }
+    }
+
     beginUndoGesture();
 
     state.pointerId = event.pointerId;
@@ -4903,6 +5331,11 @@
       if (state.tool === "note") {
         state.noteDurationUnlocked = false;
         state.noteUnlockCol = null;
+        state.scoreEditMode = null;
+        state.scoreEditIndex = -1;
+        state.scoreEditOriginalNote = null;
+        state.scoreEditStartPoint = null;
+        state.scoreEditStartMidi = null;
       }
       renderCanvas();
       return;
@@ -4931,7 +5364,11 @@
       setPlayheadFromColumn(point.col);
       setStatus(`Paused at ${state.pausedOffsetSeconds.toFixed(2)} s. Drag the playhead to shift the current time slice.`);
     } else if (state.drawing && state.pointerId === event.pointerId) {
-      if (state.tool === "line") {
+      if (state.scoreEditMode) {
+        if (applyScoreNoteEdit(point)) {
+          markDirty();
+        }
+      } else if (state.tool === "line") {
         if (event.shiftKey && state.lineStart) {
           const dx = Math.abs(point.col - state.lineStart.col);
           const dy = Math.abs(point.row - state.lineStart.row);
@@ -4966,7 +5403,9 @@
       return;
     }
 
-    if (state.tool === "line" && state.lineStart && state.linePreview) {
+    if (state.scoreEditMode) {
+      state.scoreEvents = mergeAdjacentNoteEvents(state.scoreEvents);
+    } else if (state.tool === "line" && state.lineStart && state.linePreview) {
       stampLine(state.lineStart, state.linePreview, 1);
       markDirty();
     } else if (state.tool === "note" && state.lineStart && state.linePreview) {
@@ -4984,8 +5423,14 @@
     state.linePreview = null;
     state.noteDurationUnlocked = false;
     state.noteUnlockCol = null;
+    state.scoreEditMode = null;
+    state.scoreEditIndex = -1;
+    state.scoreEditOriginalNote = null;
+    state.scoreEditStartPoint = null;
+    state.scoreEditStartMidi = null;
     stopHoldLoop();
     commitUndoGesture();
+    updateCanvasCursor(state.currentPointer);
     renderCanvas();
   }
 
@@ -5002,6 +5447,11 @@
       return;
     }
     event.preventDefault();
+    if (event.ctrlKey) {
+      const zoomFactor = event.deltaY < 0 ? 0.88 : 1.14;
+      zoomFrequencyAtRow(point.row, zoomFactor);
+      return;
+    }
     const zoomFactor = event.deltaY < 0 ? 0.84 : 1.19;
     zoomViewAtColumn(point.col, zoomFactor);
   }
@@ -5018,9 +5468,6 @@
     }
     if (phaseDiagnosticsToggle) {
       state.showPhaseDiagnostics = phaseDiagnosticsToggle.checked;
-    }
-    if (loopToggle) {
-      state.loopPlayback = loopToggle.checked;
     }
 
     updateOutputs();
@@ -5130,8 +5577,7 @@
     for (const input of redrawInputs) {
       input.addEventListener("input", () => {
         if (input === minFreqInput || input === maxFreqInput) {
-          state.freeMinFreq = Number(minFreqInput.value);
-          state.freeMaxFreq = Number(maxFreqInput.value);
+          setFrequencyRange(Number(minFreqInput.value), Number(maxFreqInput.value));
         }
         if (input === durationInput) {
           clampViewSpan();
@@ -5142,16 +5588,21 @@
           applyBassLinePreset(state.currentBasslinePreset, { preserveBpm: true });
           return;
         }
-        markDirty();
+        markDirty({ resetFrequencyReference: input !== minFreqInput && input !== maxFreqInput });
         renderCanvas();
       });
     }
 
     if (editorViewSelect) {
       editorViewSelect.addEventListener("input", () => {
-        if (!isScoreSheetMode()) {
-          state.freeMinFreq = Number(minFreqInput.value);
-          state.freeMaxFreq = Number(maxFreqInput.value);
+        if (currentScoreProfile()) {
+          state.scoreViewFreqs[state.editorView] = {
+            min: effectiveMinFrequency(),
+            max: effectiveMaxFrequency()
+          };
+        } else {
+          state.freeMinFreq = effectiveMinFrequency();
+          state.freeMaxFreq = effectiveMaxFrequency();
         }
         state.editorView = editorViewSelect.value;
         applyEditorViewSettings();
@@ -5215,13 +5666,14 @@
       }
     });
 
-    if (loopToggle) {
-      loopToggle.addEventListener("change", () => {
-        state.loopPlayback = loopToggle.checked;
+    if (loopButton) {
+      loopButton.addEventListener("click", () => {
+        state.loopPlayback = !state.loopPlayback;
+        updateOutputs();
         if (state.sourceNode) {
           state.sourceNode.loop = state.loopPlayback;
-          setStatus(state.loopPlayback ? "Loop playback enabled." : "Loop playback disabled.");
         }
+        setStatus(state.loopPlayback ? "Loop playback enabled." : "Loop playback disabled.");
       });
     }
 
@@ -5232,6 +5684,19 @@
         markDirty();
         if (state.isPlaying) {
           stopPlayback(`Render mode switched to ${renderModeName(state.renderMode)}.`);
+        } else {
+          renderCanvas();
+        }
+      });
+    }
+
+    if (frequencyAxisSelect) {
+      frequencyAxisSelect.addEventListener("input", () => {
+        setFrequencyAxisMode(frequencyAxisSelect.value);
+        updateOutputs();
+        markDirty();
+        if (state.isPlaying) {
+          stopPlayback(`Frequency axis switched to ${frequencyAxisName()}.`);
         } else {
           renderCanvas();
         }
@@ -5373,6 +5838,9 @@
 
     if (editorViewSelect) {
       state.editorView = editorViewSelect.value || "spectrogram";
+    }
+    if (frequencyAxisSelect) {
+      state.frequencyAxis = frequencyAxisSelect.value || "log";
     }
     applyEditorViewSettings();
     updateOutputs();

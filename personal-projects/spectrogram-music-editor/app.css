@@ -191,6 +191,13 @@ select:hover {
 
 .note-tool-btn {
   position: relative;
+  overflow: visible;
+  z-index: 1;
+}
+
+.note-tool-btn:hover,
+.note-tool-btn:focus-within {
+  z-index: 8;
 }
 
 .note-tool-help {
@@ -201,6 +208,10 @@ select:hover {
   height: 1rem;
   font-size: 0.7rem;
   z-index: 2;
+}
+
+.note-tool-help::after {
+  z-index: 12;
 }
 
 .tool-settings-wrap {

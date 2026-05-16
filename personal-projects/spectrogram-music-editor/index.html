@@ -238,6 +238,8 @@
                       <span class="help-tooltip-row"><strong>6</strong> Select the Note tool in guitar or piano score-sheet view</span>
                       <span class="help-tooltip-row"><strong>[</strong> or <strong>]</strong> Change brush size</span>
                       <span class="help-tooltip-row"><strong>-</strong> or <strong>=</strong> Change strength</span>
+                      <span class="help-tooltip-row"><strong>Scroll</strong> Zoom in time</span>
+                      <span class="help-tooltip-row"><strong>Ctrl + Scroll</strong> Zoom in frequency</span>
                       <span class="help-tooltip-row"><strong>Space</strong> Play or pause</span>
                       <span class="help-tooltip-row"><strong>S</strong> Stop playback</span>
                       <span class="help-tooltip-row"><strong>C</strong> Clear the drawing layer</span>
@@ -287,6 +289,16 @@
                       <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.4" fill="currentColor" stroke="none"/></svg>
                     </span>
                     <span class="sr-only">Stop</span>
+                  </button>
+                  <button id="loop-btn" type="button" class="action-btn transport-btn" aria-label="Loop playback" aria-pressed="false" title="Loop playback">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path d="M11.7 5.5a6.85 6.85 0 106.4 9.45"/>
+                        <path d="M11.95 5.45h4.65"/>
+                        <path d="M16.6 5.45L14.2 7.85"/>
+                      </svg>
+                    </span>
+                    <span class="sr-only">Loop playback</span>
                   </button>
                   <button id="render-btn" type="button" class="action-btn transport-btn" aria-label="Render audio" title="Render audio">
                     <span class="tool-icon" aria-hidden="true">
@@ -388,25 +400,28 @@
                       <option value="hybrid">Hybrid coherence + Griffin-Lim</option>
                     </select>
                   </label>
+                  <label class="control-stack" for="frequency-axis-select">
+                    <span>Frequency axis</span>
+                    <select id="frequency-axis-select">
+                      <option value="log" selected>Logarithmic</option>
+                      <option value="linear">Equal-spaced</option>
+                    </select>
+                  </label>
                   <label class="control-stack">
                     <span>Duration: <output id="duration-out">6.0 s</output></span>
                     <input id="duration-input" type="range" min="1" max="900" step="0.25" value="6" />
                   </label>
                   <label class="control-stack">
                     <span>Min frequency: <output id="minfreq-out">80 Hz</output></span>
-                    <input id="minfreq-input" type="range" min="30" max="500" step="5" value="80" />
+                    <input id="minfreq-input" type="range" min="20" max="7000" step="5" value="80" />
                   </label>
                   <label class="control-stack">
                     <span>Max frequency: <output id="maxfreq-out">3200 Hz</output></span>
-                    <input id="maxfreq-input" type="range" min="1200" max="8000" step="50" value="3200" />
+                    <input id="maxfreq-input" type="range" min="40" max="8000" step="10" value="3200" />
                   </label>
                   <label class="control-stack">
                     <span>Playback gain: <output id="gain-out">0.65</output></span>
                     <input id="gain-input" type="range" min="0.1" max="1" step="0.01" value="0.65" />
-                  </label>
-                  <label class="check-row">
-                    <input id="loop-toggle" type="checkbox" />
-                    <span>Loop playback</span>
                   </label>
                   <label class="check-row">
                     <input id="grid-toggle" type="checkbox" checked />
