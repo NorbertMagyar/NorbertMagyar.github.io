@@ -234,11 +234,19 @@
       lineStart: null,
       linePreview: null,
       pointerId: null,
+      selectedScoreIndices: [],
+      selectionRectStart: null,
+      selectionRectCurrent: null,
+      selectionAdditive: false,
+      selectionClickHit: null,
+      notePreviewLengthBeats: 2,
       noteDurationUnlocked: false,
       noteUnlockCol: null,
       scoreEditMode: null,
       scoreEditIndex: -1,
       scoreEditOriginalNote: null,
+      scoreEditSelectionIndices: [],
+      scoreEditOriginalSelectionNotes: null,
       scoreEditStartPoint: null,
       scoreEditStartMidi: null,
       dirty: true,
@@ -389,6 +397,47 @@
     return 2;
   }
 
+  function formatScoreLengthBeats(beats) {
+    const rounded = Number(beats.toFixed(6));
+    if (rounded >= 1 && Math.abs(rounded - Math.round(rounded)) < 1e-6) {
+      return String(Math.round(rounded));
+    }
+    const denominator = Math.round(1 / Math.max(rounded, 1e-6));
+    return `1/${denominator}`;
+  }
+
+  function normalizeScorePreviewLengthBeats(beats) {
+    return nearestAllowedScoreLengthBeats(clamp(beats, scoreAllowedNoteLengthsBeats()[0], scoreAllowedNoteLengthsBeats().at(-1) || defaultScoreNoteLengthBeats()));
+  }
+
+  function currentNotePreviewLengthBeats() {
+    const normalized = normalizeScorePreviewLengthBeats(state.notePreviewLengthBeats ?? defaultScoreNoteLengthBeats());
+    state.notePreviewLengthBeats = normalized;
+    return normalized;
+  }
+
+  function setNotePreviewLengthBeats(beats) {
+    state.notePreviewLengthBeats = normalizeScorePreviewLengthBeats(beats);
+    return state.notePreviewLengthBeats;
+  }
+
+  function stepNotePreviewLength(stepDirection) {
+    const allowed = scoreAllowedNoteLengthsBeats();
+    if (!allowed.length) {
+      return null;
+    }
+    const current = currentNotePreviewLengthBeats();
+    let index = allowed.findIndex((beats) => Math.abs(beats - current) < 1e-6);
+    if (index < 0) {
+      index = allowed.findIndex((beats) => beats >= current - 1e-6);
+      if (index < 0) {
+        index = allowed.length - 1;
+      }
+    }
+    index = clamp(index + stepDirection, 0, allowed.length - 1);
+    return setNotePreviewLengthBeats(allowed[index]);
+  }
+
   function scoreNoteDragActivationBeats() {
     return 0.75;
   }
@@ -455,9 +504,34 @@
 
   function quantizedScoreDurationBeatsFromDrag(dragBeatsFromUnlock) {
     if (!state.noteDurationUnlocked) {
-      return defaultScoreNoteLengthBeats();
+      return currentNotePreviewLengthBeats();
     }
     return Math.max(scoreAllowedNoteLengthsBeats()[0], 1 + dragBeatsFromUnlock);
+  }
+
+  function previewScoreNotePlacement(point) {
+    const snap = snapPointToScoreMidi(point);
+    if (!snap) {
+      return null;
+    }
+    const startSec = clamp(
+      timeFromCol(snap.col),
+      0,
+      Math.max(0, durationSeconds() - minimumScoreNoteDurationSec())
+    );
+    const endSec = clamp(
+      startSec + currentNotePreviewLengthBeats() * scoreBeatSeconds(),
+      startSec + minimumScoreNoteDurationSec(),
+      durationSeconds()
+    );
+    return {
+      midi: snap.midi,
+      startSec,
+      endSec,
+      startCol: colFromTime(startSec),
+      endCol: colFromTime(endSec),
+      durationBeats: (endSec - startSec) / scoreBeatSeconds()
+    };
   }
 
   function quantizedScoreNotePlacement(startPoint, endPoint) {
@@ -481,7 +555,7 @@
     }
     const startSec = clamp(rawStartSec, 0, Math.max(0, durationSeconds() - minimumScoreNoteDurationSec()));
     let endSec = clamp(
-      startSec + defaultScoreNoteLengthBeats() * beatSeconds,
+      startSec + currentNotePreviewLengthBeats() * beatSeconds,
       startSec + minimumScoreNoteDurationSec(),
       durationSeconds()
     );
@@ -522,7 +596,7 @@
   }
 
   function updateToolParameterVisibility() {
-    const showSize = state.tool !== "note" && state.tool !== "pointer";
+    const showSize = !["note", "pointer", "select"].includes(state.tool);
     const showStrength = ["brush", "spray", "gaussian", "erase"].includes(state.tool);
     const showDensity = state.tool === "spray";
     const showAny = showSize || showStrength || showDensity;
@@ -1239,6 +1313,7 @@
     if (!layer) {
       return;
     }
+    clearScoreSelection();
     state.activeLayerId = layer.id;
     const tab = currentTabRecord();
     if (tab) {
@@ -2146,6 +2221,9 @@
     if (state.tool === "pointer") {
       return "ew-resize";
     }
+    if (state.tool === "select") {
+      return "crosshair";
+    }
     return state.tool === "line" || state.tool === "note" ? "cell" : "crosshair";
   }
 
@@ -2178,11 +2256,16 @@
     if (!point || !isScoreSheetMode() || !state.scoreEvents.length) {
       return null;
     }
-    const edgeThresholdCols = Math.max(2, (10 / plotWidth()) * visibleColCount());
+    const baseEdgeThresholdCols = Math.max(0.75, (10 / plotWidth()) * visibleColCount());
     const rowThreshold = 2.2;
     for (let index = state.scoreEvents.length - 1; index >= 0; index -= 1) {
       const note = state.scoreEvents[index];
       const geometry = scoreNoteGeometry(note);
+      const noteWidthCols = Math.max(1, geometry.endCol - geometry.startCol);
+      const edgeThresholdCols = Math.min(
+        baseEdgeThresholdCols,
+        Math.max(0.22, noteWidthCols * 0.26)
+      );
       const withinRows = point.row >= geometry.minRow - rowThreshold && point.row <= geometry.maxRow + rowThreshold;
       if (!withinRows) {
         continue;
@@ -2192,12 +2275,27 @@
         continue;
       }
       let mode = "move";
-      if (Math.abs(point.col - geometry.startCol) <= edgeThresholdCols) {
-        mode = "resize-left";
-      } else if (Math.abs(point.col - geometry.endCol) <= edgeThresholdCols) {
-        mode = "resize-right";
-      } else if (point.col < geometry.startCol || point.col > geometry.endCol) {
-        continue;
+      if (point.col < geometry.startCol || point.col > geometry.endCol) {
+        const leftDistance = Math.abs(point.col - geometry.startCol);
+        const rightDistance = Math.abs(point.col - geometry.endCol);
+        mode = leftDistance <= rightDistance ? "resize-left" : "resize-right";
+      } else {
+        const leftDistance = Math.abs(point.col - geometry.startCol);
+        const rightDistance = Math.abs(point.col - geometry.endCol);
+        const midpoint = (geometry.startCol + geometry.endCol) * 0.5;
+        const moveHalfWidth = Math.max(0.18, noteWidthCols * 0.18);
+
+        if (noteWidthCols <= edgeThresholdCols * 2.6) {
+          if (Math.abs(point.col - midpoint) <= moveHalfWidth) {
+            mode = "move";
+          } else {
+            mode = leftDistance <= rightDistance ? "resize-left" : "resize-right";
+          }
+        } else if (leftDistance <= edgeThresholdCols) {
+          mode = "resize-left";
+        } else if (rightDistance <= edgeThresholdCols) {
+          mode = "resize-right";
+        }
       }
       return {
         index,
@@ -2207,6 +2305,99 @@
       };
     }
     return null;
+  }
+
+  function normalizeSelectedScoreIndices() {
+    state.selectedScoreIndices = Array.from(new Set(
+      state.selectedScoreIndices
+        .filter((index) => Number.isInteger(index) && index >= 0 && index < state.scoreEvents.length)
+    )).sort((a, b) => a - b);
+    return state.selectedScoreIndices;
+  }
+
+  function clearScoreSelection() {
+    state.selectedScoreIndices = [];
+  }
+
+  function setSelectedScoreIndices(indices) {
+    state.selectedScoreIndices = Array.isArray(indices) ? indices.slice() : [];
+    return normalizeSelectedScoreIndices();
+  }
+
+  function toggleSelectedScoreIndex(index) {
+    const selected = new Set(normalizeSelectedScoreIndices());
+    if (selected.has(index)) {
+      selected.delete(index);
+    } else {
+      selected.add(index);
+    }
+    state.selectedScoreIndices = Array.from(selected).sort((a, b) => a - b);
+    return state.selectedScoreIndices;
+  }
+
+  function selectedScoreNotes() {
+    return normalizeSelectedScoreIndices().map((index) => state.scoreEvents[index]).filter(Boolean);
+  }
+
+  function scoreNotesSpan(notes) {
+    if (!notes || !notes.length) {
+      return null;
+    }
+    let startSec = Infinity;
+    let endSec = -Infinity;
+    for (const note of notes) {
+      const span = noteRenderSpan(note);
+      startSec = Math.min(startSec, span.startSec);
+      endSec = Math.max(endSec, span.endSec);
+    }
+    return Number.isFinite(startSec) && Number.isFinite(endSec)
+      ? { startSec, endSec }
+      : null;
+  }
+
+  function deleteScoreNotesByIndices(indices) {
+    const normalized = Array.from(new Set((indices || []).filter((index) => Number.isInteger(index) && index >= 0 && index < state.scoreEvents.length))).sort((a, b) => a - b);
+    if (!normalized.length) {
+      return null;
+    }
+    const removedNotes = normalized.map((index) => state.scoreEvents[index]).filter(Boolean);
+    const removedSpan = scoreNotesSpan(removedNotes);
+    const indexSet = new Set(normalized);
+    state.scoreEvents = state.scoreEvents.filter((_, index) => !indexSet.has(index));
+    clearScoreSelection();
+    return removedSpan;
+  }
+
+  function scoreSelectionBounds(fromPoint, toPoint) {
+    if (!fromPoint || !toPoint) {
+      return null;
+    }
+    return {
+      minCol: Math.min(fromPoint.col, toPoint.col),
+      maxCol: Math.max(fromPoint.col, toPoint.col),
+      minRow: Math.min(fromPoint.row, toPoint.row),
+      maxRow: Math.max(fromPoint.row, toPoint.row)
+    };
+  }
+
+  function scoreNoteIndicesWithinSelectionRect(fromPoint, toPoint) {
+    const bounds = scoreSelectionBounds(fromPoint, toPoint);
+    if (!bounds || !isScoreSheetMode()) {
+      return [];
+    }
+    const indices = [];
+    for (let index = 0; index < state.scoreEvents.length; index += 1) {
+      const geometry = scoreNoteGeometry(state.scoreEvents[index]);
+      if (
+        geometry.startCol >= bounds.minCol
+        && geometry.endCol <= bounds.maxCol
+        && geometry.minRow >= bounds.minRow
+        && geometry.maxRow <= bounds.maxRow
+      ) {
+        indices.push(index);
+      }
+    }
+    return indices;
   }
 
   function currentEditableScoreHit() {
@@ -2227,7 +2418,62 @@
     if (!note) {
       return false;
     }
-    state.noteClipboard = { ...note };
+    state.noteClipboard = {
+      notes: [{ ...note }]
+    };
+    return true;
+  }
+
+  function copySelectedScoreNotesToClipboard(notes) {
+    if (!notes || !notes.length) {
+      return false;
+    }
+    state.noteClipboard = {
+      notes: notes
+        .map((note) => ({ ...note }))
+        .sort((a, b) => a.startSec - b.startSec || a.midi - b.midi)
+    };
+    return true;
+  }
+
+  function cutSelectedScoreNotes() {
+    const selectedNotes = selectedScoreNotes();
+    if (selectedNotes.length) {
+      if (!copySelectedScoreNotesToClipboard(selectedNotes)) {
+        return false;
+      }
+      beginUndoGesture();
+      const removedSpan = deleteScoreNotesByIndices(normalizeSelectedScoreIndices());
+      if (removedSpan) {
+        markDirty({
+          full: false,
+          layers: ["score"],
+          rangeStartSec: removedSpan.startSec,
+          rangeEndSec: removedSpan.endSec
+        });
+      }
+      commitUndoGesture();
+      setStatus(`Cut ${selectedNotes.length} selected note${selectedNotes.length === 1 ? "" : "s"}.`);
+      renderCanvas();
+      return true;
+    }
+    const scoreHit = currentEditableScoreHit();
+    if (!scoreHit || !copyScoreNoteToClipboard(scoreHit.note)) {
+      return false;
+    }
+    beginUndoGesture();
+    const removedSpan = deleteScoreNotesByIndices([scoreHit.index]);
+    if (removedSpan) {
+      markDirty({
+        full: false,
+        layers: ["score"],
+        rangeStartSec: removedSpan.startSec,
+        rangeEndSec: removedSpan.endSec
+      });
+    }
+    commitUndoGesture();
+    setStatus(`Cut note at ${scoreHit.note.startSec.toFixed(2)} s.`);
+    renderCanvas();
     return true;
   }
 
@@ -2260,49 +2506,117 @@
   }
 
   function pasteScoreNoteFromClipboard() {
-    if (!state.noteClipboard || !isScoreSheetMode()) {
+    if (!state.noteClipboard || !Array.isArray(state.noteClipboard.notes) || !state.noteClipboard.notes.length || !isScoreSheetMode()) {
       return false;
     }
     const targetPoint = scoreNotePasteTargetPoint();
-    const source = state.noteClipboard;
+    const sources = state.noteClipboard.notes.slice().sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
+    const sourceStart = Math.min(...sources.map((note) => note.startSec));
+    const sourceEnd = Math.max(...sources.map((note) => note.startSec + note.durationSec));
+    const sourceMinMidi = Math.min(...sources.map((note) => note.midi));
+    const sourceMaxMidi = Math.max(...sources.map((note) => note.midi));
     const trackDuration = durationSeconds();
-    const nextNote = {
+    const profile = currentScoreProfile();
+    const desiredStart = targetPoint ? timeFromCol(targetPoint.col) : sourceStart;
+    const startDelta = clamp(
+      desiredStart - sourceStart,
+      -sourceStart,
+      trackDuration - sourceEnd
+    );
+    const desiredMidi = targetPoint && Number.isFinite(targetPoint.midi) ? targetPoint.midi : sourceMinMidi;
+    const midiDelta = clamp(
+      desiredMidi - sourceMinMidi,
+      profile.minMidi - sourceMinMidi,
+      profile.maxMidi - sourceMaxMidi
+    );
+    const pastedNotes = sources.map((source) => ({
       ...source,
-      startSec: clamp(
-        targetPoint ? timeFromCol(targetPoint.col) : source.startSec,
-        0,
-        Math.max(0, trackDuration - source.durationSec)
-      ),
-      midi: targetPoint && Number.isFinite(targetPoint.midi)
-        ? targetPoint.midi
-        : clamp(source.midi, currentScoreProfile().minMidi, currentScoreProfile().maxMidi)
-    };
+      startSec: source.startSec + startDelta,
+      midi: source.midi + midiDelta
+    }));
     beginUndoGesture();
     state.scoreEvents = mergeAdjacentNoteEvents([
       ...state.scoreEvents,
-      nextNote
+      ...pastedNotes
     ]);
-    const span = noteRenderSpan(nextNote);
+    const spanStart = Math.min(...pastedNotes.map((note) => noteRenderSpan(note).startSec));
+    const spanEnd = Math.max(...pastedNotes.map((note) => noteRenderSpan(note).endSec));
     markDirty({
       full: false,
       layers: ["score"],
-      rangeStartSec: span.startSec,
-      rangeEndSec: span.endSec
+      rangeStartSec: spanStart,
+      rangeEndSec: spanEnd
     });
     commitUndoGesture();
-    setStatus(`Pasted note at ${nextNote.startSec.toFixed(2)} s.`);
+    clearScoreSelection();
+    setStatus(`Pasted ${pastedNotes.length} note${pastedNotes.length === 1 ? "" : "s"} at ${(sourceStart + startDelta).toFixed(2)} s.`);
     renderCanvas();
     return true;
   }
 
   function applyScoreNoteEdit(point) {
-    if (!state.scoreEditOriginalNote || state.scoreEditIndex < 0 || !point) {
+    if (
+      !point
+      || (
+        state.scoreEditMode !== "move-selection"
+        && (!state.scoreEditOriginalNote || state.scoreEditIndex < 0)
+      )
+    ) {
       return false;
     }
     const original = state.scoreEditOriginalNote;
     const minDuration = minimumScoreNoteDurationSec();
     const trackDuration = durationSeconds();
     let nextNote = { ...original };
+
+    if (state.scoreEditMode === "move-selection") {
+      const originalNotes = Array.isArray(state.scoreEditOriginalSelectionNotes) ? state.scoreEditOriginalSelectionNotes : [];
+      const selectionIndices = Array.isArray(state.scoreEditSelectionIndices) ? state.scoreEditSelectionIndices : [];
+      if (!originalNotes.length || !selectionIndices.length) {
+        return false;
+      }
+      const deltaSec = timeFromCol(point.col) - timeFromCol(state.scoreEditStartPoint.col);
+      const nextMidi = nearestScoreMidiForPoint(point);
+      const deltaMidi = nextMidi === null || state.scoreEditStartMidi === null ? 0 : nextMidi - state.scoreEditStartMidi;
+      const profile = currentScoreProfile();
+      const originalMinStart = Math.min(...originalNotes.map((note) => note.startSec));
+      const originalMaxEnd = Math.max(...originalNotes.map((note) => note.startSec + note.durationSec));
+      const originalMinMidi = Math.min(...originalNotes.map((note) => note.midi));
+      const originalMaxMidi = Math.max(...originalNotes.map((note) => note.midi));
+      const clampedDeltaSec = clamp(
+        deltaSec,
+        -originalMinStart,
+        trackDuration - originalMaxEnd
+      );
+      const clampedDeltaMidi = clamp(
+        deltaMidi,
+        profile.minMidi - originalMinMidi,
+        profile.maxMidi - originalMaxMidi
+      );
+      let changed = false;
+      for (let i = 0; i < selectionIndices.length; i += 1) {
+        const index = selectionIndices[i];
+        const source = originalNotes[i];
+        if (!source || index < 0 || index >= state.scoreEvents.length) {
+          continue;
+        }
+        const movedNote = {
+          ...source,
+          startSec: source.startSec + clampedDeltaSec,
+          midi: source.midi + clampedDeltaMidi
+        };
+        const current = state.scoreEvents[index];
+        if (
+          Math.abs(movedNote.startSec - current.startSec) > 1e-6
+          || Math.abs(movedNote.durationSec - current.durationSec) > 1e-6
+          || movedNote.midi !== current.midi
+        ) {
+          state.scoreEvents[index] = movedNote;
+          changed = true;
+        }
+      }
+      return changed;
+    }
 
     if (state.scoreEditMode === "move") {
       const deltaSec = timeFromCol(point.col) - timeFromCol(state.scoreEditStartPoint.col);
@@ -2355,6 +2669,10 @@
       canvas.style.cursor = "grabbing";
       return;
     }
+    if (state.scoreEditMode === "move-selection") {
+      canvas.style.cursor = "grabbing";
+      return;
+    }
     if (state.scoreEditMode === "resize-left" || state.scoreEditMode === "resize-right") {
       canvas.style.cursor = "ew-resize";
       return;
@@ -2362,6 +2680,13 @@
     if (isNearPlayhead(point)) {
       canvas.style.cursor = "ew-resize";
       return;
+    }
+    if (state.tool === "select") {
+      const hit = hitTestScoreNote(point);
+      if (hit) {
+        canvas.style.cursor = "pointer";
+        return;
+      }
     }
     if (state.tool === "note") {
       const hit = hitTestScoreNote(point);
@@ -2920,13 +3245,15 @@
       loopButton.setAttribute("aria-pressed", state.loopPlayback ? "true" : "false");
       loopButton.title = state.loopPlayback ? "Loop playback on" : "Loop playback off";
     }
-    const noteToolButton = toolButtons.find((button) => button.dataset.tool === "note");
-    if (noteToolButton) {
-      noteToolButton.hidden = !isScoreNoteToolAvailable();
-      noteToolButton.disabled = !isScoreNoteToolAvailable();
-      if (!isScoreNoteToolAvailable() && state.tool === "note") {
-        state.tool = "brush";
+    for (const scoreTool of ["select", "note"]) {
+      const button = toolButtons.find((toolButton) => toolButton.dataset.tool === scoreTool);
+      if (button) {
+        button.hidden = !isScoreNoteToolAvailable();
+        button.disabled = !isScoreNoteToolAvailable();
       }
+    }
+    if (!isScoreNoteToolAvailable() && (state.tool === "note" || state.tool === "select")) {
+      state.tool = "pointer";
     }
     updateToolParameterVisibility();
     for (const button of toolButtons) {
@@ -3386,6 +3713,38 @@
     ctx.restore();
   }
 
+  function drawNoteGhostPreview() {
+    if (
+      state.tool !== "note"
+      || state.drawing
+      || !state.pointerInside
+      || !state.currentPointer
+      || !isScoreSheetMode()
+    ) {
+      return;
+    }
+    const placement = previewScoreNotePlacement(state.currentPointer);
+    if (!placement) {
+      return;
+    }
+    const topFreq = midiToFreq(placement.midi + 0.48);
+    const bottomFreq = midiToFreq(placement.midi - 0.48);
+    const top = gridToCanvas(placement.startCol, rowFromFreq(topFreq));
+    const bottom = gridToCanvas(placement.endCol, rowFromFreq(bottomFreq));
+    const x = Math.min(top.x, bottom.x);
+    const y = Math.min(top.y, bottom.y);
+    const width = Math.max(2, Math.abs(bottom.x - top.x));
+    const height = Math.max(5, Math.abs(bottom.y - top.y));
+    ctx.save();
+    ctx.fillStyle = "rgba(111, 214, 255, 0.16)";
+    ctx.strokeStyle = "rgba(111, 214, 255, 0.72)";
+    ctx.setLineDash([6, 5]);
+    ctx.lineWidth = 1.2;
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, width - 1), Math.max(1, height - 1));
+    ctx.restore();
+  }
+
   function drawImportedScoreOverlay() {
     if (!hasImportedScoreOverlay()) {
       return;
@@ -3431,6 +3790,68 @@
       ctx.strokeRect(x1 + 0.5, rectY + 0.5, Math.max(1, width - 1), Math.max(1, rectHeight - 1));
     }
 
+    ctx.restore();
+  }
+
+  function drawSelectedScoreOverlay() {
+    const selected = normalizeSelectedScoreIndices();
+    if (!selected.length || !isScoreSheetMode()) {
+      return;
+    }
+    const x0 = margins.left;
+    const y0 = margins.top;
+    const w = plotWidth();
+    const h = plotHeight();
+    const startVisibleCol = visibleStartCol();
+    const endVisibleCol = visibleEndCol();
+
+    ctx.save();
+    ctx.rect(x0, y0, w, h);
+    ctx.clip();
+    for (const index of selected) {
+      const note = state.scoreEvents[index];
+      if (!note) {
+        continue;
+      }
+      const geometry = scoreNoteGeometry(note);
+      if (geometry.endCol < startVisibleCol || geometry.startCol > endVisibleCol) {
+        continue;
+      }
+      const clampedStart = Math.max(startVisibleCol, geometry.startCol);
+      const clampedEnd = Math.min(endVisibleCol, geometry.endCol);
+      const x1 = margins.left + ((clampedStart - startVisibleCol) / Math.max(1, visibleColCount() - 1)) * plotWidth();
+      const x2 = margins.left + ((clampedEnd - startVisibleCol) / Math.max(1, visibleColCount() - 1)) * plotWidth();
+      const width = Math.max(2, x2 - x1);
+      const topY = y0 + (geometry.minRow / (GRID_ROWS - 1)) * h;
+      const bottomY = y0 + (geometry.maxRow / (GRID_ROWS - 1)) * h;
+      const rectHeight = Math.max(5, bottomY - topY);
+      const rectY = (topY + bottomY) * 0.5 - rectHeight * 0.5;
+      ctx.fillStyle = "rgba(255, 226, 122, 0.16)";
+      ctx.strokeStyle = "rgba(255, 226, 122, 0.98)";
+      ctx.lineWidth = 1.8;
+      ctx.fillRect(x1, rectY, width, rectHeight);
+      ctx.strokeRect(x1 + 0.5, rectY + 0.5, Math.max(1, width - 1), Math.max(1, rectHeight - 1));
+    }
+    ctx.restore();
+  }
+
+  function drawScoreSelectionMarquee() {
+    if (state.tool !== "select" || !state.selectionRectStart || !state.selectionRectCurrent) {
+      return;
+    }
+    const from = gridToCanvas(state.selectionRectStart.col, state.selectionRectStart.row);
+    const to = gridToCanvas(state.selectionRectCurrent.col, state.selectionRectCurrent.row);
+    const x = Math.min(from.x, to.x);
+    const y = Math.min(from.y, to.y);
+    const width = Math.abs(to.x - from.x);
+    const height = Math.abs(to.y - from.y);
+    ctx.save();
+    ctx.setLineDash([7, 5]);
+    ctx.fillStyle = "rgba(111, 214, 255, 0.12)";
+    ctx.strokeStyle = "rgba(111, 214, 255, 0.95)";
+    ctx.lineWidth = 1.4;
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, width - 1), Math.max(1, height - 1));
     ctx.restore();
   }
 
@@ -3484,7 +3905,7 @@
   }
 
   function drawPointerPreview() {
-    if (!state.pointerInside || !state.currentPointer || state.tool === "line" || state.tool === "note" || state.tool === "pointer") {
+    if (!state.pointerInside || !state.currentPointer || ["line", "note", "pointer", "select"].includes(state.tool)) {
       return;
     }
     const point = gridToCanvas(state.currentPointer.col, state.currentPointer.row);
@@ -3616,9 +4037,12 @@
     drawGridAndAxes();
     drawBassEventOverlay();
     drawImportedScoreOverlay();
+    drawSelectedScoreOverlay();
     drawPhaseDiagnosticsOverlay(diagnostics);
     drawPlayhead();
+    drawNoteGhostPreview();
     drawLinePreview();
+    drawScoreSelectionMarquee();
     drawPointerPreview();
   }
 
@@ -7366,8 +7790,8 @@
   }
 
   function setTool(tool) {
-    if (tool === "note" && !isScoreNoteToolAvailable()) {
-      tool = "brush";
+    if ((tool === "note" || tool === "select") && !isScoreNoteToolAvailable()) {
+      tool = "pointer";
     }
     state.tool = tool;
     scheduleSessionProjectSave();
@@ -8272,6 +8696,45 @@
       stopPlayback("Playback stopped for editing.");
     }
 
+    if (state.tool === "select" && isScoreSheetMode()) {
+      const scoreHit = hitTestScoreNote(point);
+      if (!(event.ctrlKey || event.metaKey) && scoreHit) {
+        const selected = normalizeSelectedScoreIndices();
+        const targetSelection = selected.includes(scoreHit.index) ? selected : [scoreHit.index];
+        setSelectedScoreIndices(targetSelection);
+        beginUndoGesture();
+        state.pointerId = event.pointerId;
+        state.drawing = true;
+        state.lastPointer = point;
+        state.currentPointer = point;
+        state.pointerInside = true;
+        state.scoreEditMode = "move-selection";
+        state.scoreEditSelectionIndices = normalizeSelectedScoreIndices().slice();
+        state.scoreEditOriginalSelectionNotes = state.scoreEditSelectionIndices.map((index) => ({ ...state.scoreEvents[index] }));
+        state.scoreEditStartPoint = point;
+        state.scoreEditStartMidi = nearestScoreMidiForPoint(point);
+        updateCursorReadout(point);
+        canvas.setPointerCapture(event.pointerId);
+        updateCanvasCursor(point);
+        renderCanvas();
+        return;
+      }
+      state.pointerId = event.pointerId;
+      state.drawing = true;
+      state.lastPointer = point;
+      state.currentPointer = point;
+      state.pointerInside = true;
+      state.selectionRectStart = point;
+      state.selectionRectCurrent = point;
+      state.selectionAdditive = Boolean(event.ctrlKey || event.metaKey);
+      state.selectionClickHit = scoreHit;
+      updateCursorReadout(point);
+      canvas.setPointerCapture(event.pointerId);
+      updateCanvasCursor(point);
+      renderCanvas();
+      return;
+    }
+
     if (state.tool === "note") {
       const scoreHit = hitTestScoreNote(point);
       if (scoreHit) {
@@ -8355,18 +8818,35 @@
       setPlayheadFromColumn(point.col);
       setStatus(timelinePositionStatus());
     } else if (state.drawing && state.pointerId === event.pointerId) {
-      if (state.scoreEditMode) {
+      if (state.tool === "select" && state.selectionRectStart) {
+        state.selectionRectCurrent = point;
+      } else if (state.scoreEditMode) {
         const originalNote = state.scoreEditOriginalNote;
-        if (applyScoreNoteEdit(point) && originalNote) {
-          const currentNote = state.scoreEvents[state.scoreEditIndex];
-          const originalSpan = noteRenderSpan(originalNote);
-          const currentSpan = noteRenderSpan(currentNote);
-          markDirty({
-            full: false,
-            layers: ["score"],
-            rangeStartSec: Math.min(originalSpan.startSec, currentSpan.startSec),
-            rangeEndSec: Math.max(originalSpan.endSec, currentSpan.endSec)
-          });
+        if (applyScoreNoteEdit(point)) {
+          if (state.scoreEditMode === "move-selection") {
+            const originalSpan = scoreNotesSpan(state.scoreEditOriginalSelectionNotes || []);
+            const currentSpan = scoreNotesSpan(
+              (state.scoreEditSelectionIndices || []).map((index) => state.scoreEvents[index]).filter(Boolean)
+            );
+            if (originalSpan && currentSpan) {
+              markDirty({
+                full: false,
+                layers: ["score"],
+                rangeStartSec: Math.min(originalSpan.startSec, currentSpan.startSec),
+                rangeEndSec: Math.max(originalSpan.endSec, currentSpan.endSec)
+              });
+            }
+          } else if (originalNote) {
+            const currentNote = state.scoreEvents[state.scoreEditIndex];
+            const originalSpan = noteRenderSpan(originalNote);
+            const currentSpan = noteRenderSpan(currentNote);
+            markDirty({
+              full: false,
+              layers: ["score"],
+              rangeStartSec: Math.min(originalSpan.startSec, currentSpan.startSec),
+              rangeEndSec: Math.max(originalSpan.endSec, currentSpan.endSec)
+            });
+          }
         }
       } else if (state.tool === "line") {
         if (event.shiftKey && state.lineStart) {
@@ -8403,7 +8883,40 @@
       return;
     }
 
-    if (state.scoreEditMode) {
+    if (state.tool === "select" && state.selectionRectStart) {
+      const dx = Math.abs((state.selectionRectCurrent || state.selectionRectStart).col - state.selectionRectStart.col);
+      const dy = Math.abs((state.selectionRectCurrent || state.selectionRectStart).row - state.selectionRectStart.row);
+      const isClick = dx < Math.max(1.5, (8 / plotWidth()) * visibleColCount()) && dy < 1.6;
+      if (isClick) {
+        if (state.selectionClickHit) {
+          if (state.selectionAdditive) {
+            toggleSelectedScoreIndex(state.selectionClickHit.index);
+          } else {
+            setSelectedScoreIndices([state.selectionClickHit.index]);
+          }
+        } else if (!state.selectionAdditive) {
+          clearScoreSelection();
+        }
+      } else {
+        const selection = scoreNoteIndicesWithinSelectionRect(
+          state.selectionRectStart,
+          state.selectionRectCurrent || state.selectionRectStart
+        );
+        if (state.selectionAdditive) {
+          setSelectedScoreIndices([...normalizeSelectedScoreIndices(), ...selection]);
+        } else {
+          setSelectedScoreIndices(selection);
+        }
+      }
+      const selectionCount = normalizeSelectedScoreIndices().length;
+      setStatus(selectionCount
+        ? `Selected ${selectionCount} note${selectionCount === 1 ? "" : "s"}.`
+        : "No notes selected.");
+    } else if (state.scoreEditMode === "move-selection") {
+      clearScoreSelection();
+      state.scoreEvents = mergeAdjacentNoteEvents(state.scoreEvents);
+      setStatus("Moved selected notes.");
+    } else if (state.scoreEditMode) {
       state.scoreEvents = mergeAdjacentNoteEvents(state.scoreEvents);
     } else if (state.tool === "line" && state.lineStart && state.linePreview) {
       stampLine(state.lineStart, state.linePreview, 1);
@@ -8432,11 +8945,17 @@
     state.pointerId = null;
     state.lineStart = null;
     state.linePreview = null;
+    state.selectionRectStart = null;
+    state.selectionRectCurrent = null;
+    state.selectionAdditive = false;
+    state.selectionClickHit = null;
     state.noteDurationUnlocked = false;
     state.noteUnlockCol = null;
     state.scoreEditMode = null;
     state.scoreEditIndex = -1;
     state.scoreEditOriginalNote = null;
+    state.scoreEditSelectionIndices = [];
+    state.scoreEditOriginalSelectionNotes = null;
     state.scoreEditStartPoint = null;
     state.scoreEditStartMidi = null;
     stopHoldLoop();
@@ -8458,6 +8977,14 @@
       return;
     }
     event.preventDefault();
+    if (event.shiftKey && state.tool === "note" && isScoreSheetMode()) {
+      const nextLength = stepNotePreviewLength(event.deltaY < 0 ? -1 : 1);
+      if (nextLength !== null) {
+        setStatus(`Note preview length: ${formatScoreLengthBeats(nextLength)} note.`);
+        renderCanvas();
+      }
+      return;
+    }
     if (event.ctrlKey) {
       const zoomFactor = event.deltaY < 0 ? 0.88 : 1.14;
       zoomFrequencyAtRow(point.row, zoomFactor);
@@ -8987,11 +9514,26 @@
       }
 
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "c") {
-        const scoreHit = currentEditableScoreHit();
-        if (scoreHit && copyScoreNoteToClipboard(scoreHit.note)) {
+        const selectedNotes = selectedScoreNotes();
+        if (selectedNotes.length && copySelectedScoreNotesToClipboard(selectedNotes)) {
+          event.preventDefault();
+          setStatus(`Copied ${selectedNotes.length} selected note${selectedNotes.length === 1 ? "" : "s"}.`);
+          renderCanvas();
+        } else {
+          const scoreHit = currentEditableScoreHit();
+          if (!(scoreHit && copyScoreNoteToClipboard(scoreHit.note))) {
+            return;
+          }
           event.preventDefault();
           setStatus(`Copied note at ${scoreHit.note.startSec.toFixed(2)} s.`);
           renderCanvas();
+        }
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "x") {
+        if (cutSelectedScoreNotes()) {
+          event.preventDefault();
         }
         return;
       }
@@ -9018,9 +9560,9 @@
         return;
       }
 
-      if (event.key >= "1" && event.key <= "6") {
+      if (event.key >= "1" && event.key <= "7") {
         const index = Number(event.key) - 1;
-        const target = ["brush", "spray", "gaussian", "line", "erase", "note"][index];
+        const target = ["brush", "spray", "gaussian", "line", "erase", "note", "select"][index];
         setTool(target);
         renderCanvas();
         return;
