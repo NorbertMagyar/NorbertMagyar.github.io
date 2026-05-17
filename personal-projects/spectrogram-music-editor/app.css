@@ -870,6 +870,10 @@ select:hover {
   background: rgba(8, 14, 26, 0.76);
 }
 
+.status-bar > span[hidden] {
+  display: none !important;
+}
+
 .status-debug-pill {
   flex-basis: 100%;
   align-items: flex-start;

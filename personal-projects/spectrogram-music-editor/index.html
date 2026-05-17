@@ -196,6 +196,10 @@
                       <input id="phase-diagnostics-toggle" type="checkbox" />
                       <span>Phase diagnostics</span>
                     </label>
+                    <label class="check-row menu-check-row">
+                      <input id="sample-debug-toggle" type="checkbox" />
+                      <span>Show sample debug</span>
+                    </label>
                   </div>
                 </details>
 
@@ -495,7 +499,7 @@
               <div class="status-bar">
                 <span id="status-text">Ready. Press Play to render and listen.</span>
                 <span id="cursor-readout">t = 0.00 s | f = 440 Hz | a = 0.00</span>
-                <span id="sample-debug-text" class="status-debug-pill">Sample debug: idle.</span>
+                <span id="sample-debug-text" class="status-debug-pill" hidden>Sample debug: idle.</span>
               </div>
 
               <div class="timeline-bar" aria-label="Timeline viewport">

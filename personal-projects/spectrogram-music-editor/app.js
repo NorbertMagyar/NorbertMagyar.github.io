@@ -128,6 +128,7 @@
     const renderModeLabel = document.getElementById("render-mode-label");
     const renderModeDescriptionEl = document.getElementById("render-mode-description");
     const phaseDiagnosticsToggle = document.getElementById("phase-diagnostics-toggle");
+    const sampleDebugToggle = document.getElementById("sample-debug-toggle");
     const timelineTrack = document.getElementById("timeline-track");
     const timelineThumb = document.getElementById("timeline-thumb");
     const timelineInput = document.getElementById("timeline-input");
@@ -288,6 +289,7 @@
       noteBackendResolved: noteBackendSelect ? noteBackendSelect.value || "procedural" : "procedural",
       noteBackendWarning: "",
       showPhaseDiagnostics: false,
+      showSampleDebug: false,
       loopPlayback: false,
       showDrawingTools: true,
       dataVersion: 0,
@@ -1081,6 +1083,7 @@
       noteBackend: state.noteBackend,
       frequencyAxis: frequencyAxisMode(),
       showPhaseDiagnostics: state.showPhaseDiagnostics,
+      showSampleDebug: state.showSampleDebug,
       loopPlayback: state.loopPlayback,
       showDrawingTools: state.showDrawingTools,
       currentBasslinePreset: state.currentBasslinePreset,
@@ -1116,6 +1119,7 @@
     state.noteBackend = isValidNoteBackend(settings.noteBackend) ? settings.noteBackend : "procedural";
     state.frequencyAxis = settings.frequencyAxis === "linear" ? "linear" : "log";
     state.showPhaseDiagnostics = Boolean(settings.showPhaseDiagnostics);
+    state.showSampleDebug = Boolean(settings.showSampleDebug);
     state.loopPlayback = Boolean(settings.loopPlayback);
     state.showDrawingTools = settings.showDrawingTools !== false;
     state.currentBasslinePreset = typeof settings.currentBasslinePreset === "string" ? settings.currentBasslinePreset : "none";
@@ -2662,8 +2666,14 @@
     if (phaseDiagnosticsToggle) {
       phaseDiagnosticsToggle.checked = state.showPhaseDiagnostics;
     }
+    if (sampleDebugToggle) {
+      sampleDebugToggle.checked = state.showSampleDebug;
+    }
     if (drawingToolsToggle) {
       drawingToolsToggle.checked = state.showDrawingTools;
+    }
+    if (sampleDebugText) {
+      sampleDebugText.hidden = !state.showSampleDebug;
     }
     if (surfaceToolbar) {
       surfaceToolbar.classList.toggle("is-collapsed", !state.showDrawingTools);
@@ -8167,6 +8177,14 @@
         state.showPhaseDiagnostics = phaseDiagnosticsToggle.checked;
         scheduleSessionProjectSave();
         renderCanvas();
+      });
+    }
+
+    if (sampleDebugToggle) {
+      sampleDebugToggle.addEventListener("change", () => {
+        state.showSampleDebug = sampleDebugToggle.checked;
+        updateOutputs();
+        scheduleSessionProjectSave();
       });
     }
 
