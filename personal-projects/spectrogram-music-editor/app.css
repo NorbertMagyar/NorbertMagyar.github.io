@@ -69,10 +69,25 @@
 
 .editor-menubar {
   display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.7rem;
+}
+
+.editor-menubar-primary {
+  display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
-  margin-bottom: 0.7rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.menubar-shortcuts-help {
+  flex: 0 0 auto;
+  margin-left: 1rem;
+  margin-right: 0.45rem;
 }
 
 .menu-dropdown {
@@ -670,7 +685,7 @@ select:hover {
 .toolbar-subrow {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 0.8rem;
   min-height: 2.7rem;
   padding: 0 0.42rem 0 0.12rem;
