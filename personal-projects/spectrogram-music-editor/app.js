@@ -153,7 +153,6 @@
     const durationInput = document.getElementById("duration-input");
     const minFreqInput = document.getElementById("minfreq-input");
     const maxFreqInput = document.getElementById("maxfreq-input");
-    const gainInput = document.getElementById("gain-input");
     const sizeInput = document.getElementById("size-input");
     const strengthInput = document.getElementById("strength-input");
     const densityInput = document.getElementById("density-input");
@@ -178,7 +177,6 @@
     const durationOut = document.getElementById("duration-out");
     const minFreqOut = document.getElementById("minfreq-out");
     const maxFreqOut = document.getElementById("maxfreq-out");
-    const gainOut = document.getElementById("gain-out");
     const sizeOut = document.getElementById("size-out");
     const strengthOut = document.getElementById("strength-out");
     const densityOut = document.getElementById("density-out");
@@ -1096,7 +1094,7 @@
   function buildTabSettingsFromCurrentState() {
     return {
       durationSeconds: durationSeconds(),
-      gain: Number(gainInput.value),
+      gain: 1,
       brushSize: Number(sizeInput.value),
       strength: Number(strengthInput.value),
       density: Number(densityInput.value),
@@ -1130,7 +1128,6 @@
       Number(durationInput.max)
     );
     durationInput.value = String(nextDuration);
-    gainInput.value = String(clamp(Number(settings.gain) || Number(gainInput.value), Number(gainInput.min), Number(gainInput.max)));
     sizeInput.value = String(clamp(Number(settings.brushSize) || Number(sizeInput.value), Number(sizeInput.min), Number(sizeInput.max)));
     strengthInput.value = String(clamp(Number(settings.strength) || Number(strengthInput.value), Number(strengthInput.min), Number(strengthInput.max)));
     densityInput.value = String(clamp(Number(settings.density) || Number(densityInput.value), Number(densityInput.min), Number(densityInput.max)));
@@ -2738,6 +2735,7 @@
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       state.audioContext = new AudioContextClass();
       state.gainNode = state.audioContext.createGain();
+      state.gainNode.gain.value = 1;
       state.gainNode.connect(state.audioContext.destination);
     }
     return state.audioContext;
@@ -2757,7 +2755,6 @@
     maxFreqOut.textContent = isScoreSheetMode()
       ? `${Math.round(maxFreq)} Hz (${noteNameFromMidi(freqToMidi(maxFreq))})`
       : `${Math.round(maxFreq)} Hz`;
-    gainOut.textContent = Number(gainInput.value).toFixed(2);
     sizeOut.textContent = `${Math.round(Number(sizeInput.value))} px`;
     strengthOut.textContent = currentStrength().toFixed(2);
     densityOut.textContent = `${Math.round(currentDensity())}`;
@@ -7114,7 +7111,7 @@
       state.rafId = 0;
     }
 
-    state.gainNode.gain.value = Number(gainInput.value);
+    state.gainNode.gain.value = 1;
     state.liveSampleInstrument = instrument;
     state.liveSampleScheduler = null;
     state.liveSampleGainNode = liveSampleGainNode;
@@ -7185,7 +7182,7 @@
     const source = audioContext.createBufferSource();
     source.buffer = buffer;
     source.loop = state.loopPlayback;
-    state.gainNode.gain.value = Number(gainInput.value);
+    state.gainNode.gain.value = 1;
     source.connect(state.gainNode);
     source.onended = () => {
       if (state.sourceNode === source) {
@@ -8653,14 +8650,6 @@
         renderCanvas();
       });
     }
-
-    gainInput.addEventListener("input", () => {
-      updateOutputs();
-      scheduleSessionProjectSave();
-      if (state.gainNode) {
-        state.gainNode.gain.value = Number(gainInput.value);
-      }
-    });
 
     if (loopButton) {
       loopButton.addEventListener("click", () => {

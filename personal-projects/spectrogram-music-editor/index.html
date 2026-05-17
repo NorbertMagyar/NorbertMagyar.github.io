@@ -185,6 +185,21 @@
                 <details class="menu-dropdown">
                   <summary class="menu-trigger">View</summary>
                   <div class="menu-panel menu-panel-compact" role="group" aria-label="View menu">
+                    <label class="control-stack" for="editor-view-select">
+                      <span>Editor</span>
+                      <select id="editor-view-select">
+                        <option value="spectrogram">Free spectrogram</option>
+                        <option value="guitar-score">Guitar score sheet</option>
+                        <option value="piano-score">Grand piano score sheet</option>
+                      </select>
+                    </label>
+                    <label class="control-stack" for="frequency-axis-select">
+                      <span>Frequency axis</span>
+                      <select id="frequency-axis-select">
+                        <option value="log" selected>Logarithmic</option>
+                        <option value="linear">Equal-spaced</option>
+                      </select>
+                    </label>
                     <label class="check-row menu-check-row">
                       <input id="drawing-tools-toggle" type="checkbox" checked />
                       <span>Show drawing tools</span>
@@ -257,14 +272,6 @@
                 <details class="menu-dropdown">
                   <summary class="menu-trigger">Synthesis</summary>
                   <div class="menu-panel menu-panel-wide" role="group" aria-label="Synthesis menu">
-                    <label class="control-stack" for="editor-view-select">
-                      <span>Editor view</span>
-                      <select id="editor-view-select">
-                        <option value="spectrogram">Free spectrogram</option>
-                        <option value="guitar-score">Guitar score sheet</option>
-                        <option value="piano-score">Grand piano score sheet</option>
-                      </select>
-                    </label>
                     <label class="control-stack" for="render-mode-select">
                       <span id="render-mode-label">Render mode</span>
                       <select id="render-mode-select">
@@ -288,13 +295,6 @@
                         <option value="nylon-guitar-samples">Nylon guitar samples</option>
                       </select>
                     </label>
-                    <label class="control-stack" for="frequency-axis-select">
-                      <span>Frequency axis</span>
-                      <select id="frequency-axis-select">
-                        <option value="log" selected>Logarithmic</option>
-                        <option value="linear">Equal-spaced</option>
-                      </select>
-                    </label>
                     <label class="control-stack">
                       <span>Duration: <output id="duration-out">6.0 s</output></span>
                       <input id="duration-input" type="range" min="1" max="900" step="0.25" value="6" />
@@ -306,10 +306,6 @@
                     <label class="control-stack">
                       <span>Max frequency: <output id="maxfreq-out">3200 Hz</output></span>
                       <input id="maxfreq-input" type="range" min="40" max="8000" step="10" value="3200" />
-                    </label>
-                    <label class="control-stack">
-                      <span>Playback gain: <output id="gain-out">0.65</output></span>
-                      <input id="gain-input" type="range" min="0.1" max="1" step="0.01" value="0.65" />
                     </label>
                     <p id="render-mode-description" class="card-note">Tracks continuous painted structures as coherent oscillators with inferred physical phase behavior.</p>
                   </div>
