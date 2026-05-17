@@ -911,8 +911,9 @@ select:hover {
 
 .timeline-track {
   position: relative;
-  height: 1.1rem;
-  border-radius: 999px;
+  height: 4.25rem;
+  overflow: hidden;
+  border-radius: 16px;
   background:
     linear-gradient(180deg, rgba(17, 26, 46, 0.95), rgba(8, 13, 24, 0.98));
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -920,20 +921,57 @@ select:hover {
   cursor: pointer;
 }
 
+.timeline-overview {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .timeline-thumb {
   position: absolute;
-  top: 1px;
-  bottom: 1px;
+  top: 0.28rem;
+  bottom: 0.28rem;
   left: 0;
   min-width: 2.2rem;
-  border-radius: 999px;
+  border-radius: 12px;
   background:
-    linear-gradient(135deg, rgba(111, 214, 255, 0.95), rgba(255, 189, 112, 0.92));
+    linear-gradient(135deg, rgba(111, 214, 255, 0.18), rgba(255, 189, 112, 0.14));
   box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 0 0 2px rgba(111, 214, 255, 0.18),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
     0 8px 16px rgba(0, 0, 0, 0.22);
   cursor: grab;
   will-change: transform, width;
+  backdrop-filter: blur(1px);
+}
+
+.timeline-thumb::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 55%);
+  pointer-events: none;
+}
+
+.timeline-thumb-handle {
+  position: absolute;
+  top: 0.42rem;
+  bottom: 0.42rem;
+  width: 0.56rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 0 1px rgba(12, 18, 31, 0.2);
+  cursor: ew-resize;
+}
+
+.timeline-thumb-handle.is-left {
+  left: 0.32rem;
+}
+
+.timeline-thumb-handle.is-right {
+  right: 0.32rem;
 }
 
 .timeline-track:focus-visible {
@@ -943,6 +981,11 @@ select:hover {
 
 .timeline-thumb.is-dragging {
   cursor: grabbing;
+}
+
+.timeline-thumb.is-resizing-left,
+.timeline-thumb.is-resizing-right {
+  cursor: ew-resize;
 }
 
 .editor-dock {

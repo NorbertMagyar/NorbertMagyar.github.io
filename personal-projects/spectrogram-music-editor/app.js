@@ -131,6 +131,9 @@
     const sampleDebugToggle = document.getElementById("sample-debug-toggle");
     const timelineTrack = document.getElementById("timeline-track");
     const timelineThumb = document.getElementById("timeline-thumb");
+    const timelineOverview = document.getElementById("timeline-overview");
+    const timelineThumbHandleLeft = document.getElementById("timeline-thumb-handle-left");
+    const timelineThumbHandleRight = document.getElementById("timeline-thumb-handle-right");
     const timelineInput = document.getElementById("timeline-input");
     const renderOverlay = document.getElementById("render-overlay");
     const renderOverlayTitle = document.getElementById("render-overlay-title");
@@ -191,6 +194,7 @@
     }
 
     const pixelImage = offCtx.createImageData(VIEW_COLS, GRID_ROWS);
+    const timelineOverviewCtx = timelineOverview ? timelineOverview.getContext("2d", { willReadFrequently: true }) : null;
     let drawData = new Float32Array(GRID_COLS * GRID_ROWS);
     let basslineData = new Float32Array(GRID_COLS * GRID_ROWS);
     let bassEvents = [];
@@ -258,6 +262,7 @@
       isScrubbingPlayhead: false,
       isDraggingTimelineThumb: false,
       timelineDragOffsetPx: 0,
+      timelineDragMode: "",
       viewOffsetCol: 0,
       viewColSpan: VIEW_COLS,
       rafId: 0,
@@ -310,6 +315,7 @@
       currentTabId: null,
       activeLayerId: null,
       hoveredRenameTarget: null,
+      timelineOverviewCacheKey: "",
       compositeLayerCache: null,
       scoreViewFreqs: {
         "guitar-score": defaultFrequencyRangeForView("guitar-score"),
@@ -1982,7 +1988,7 @@
     const totalCols = trackColCount();
     const visibleCols = visibleColCount();
     const safeTrackWidth = Math.max(0, trackWidth);
-    const minThumbWidth = Math.min(Math.max(36, safeTrackWidth * 0.08), safeTrackWidth || 36);
+    const minThumbWidth = Math.min(Math.max(44, safeTrackWidth * 0.06), safeTrackWidth || 44);
     const thumbWidth = safeTrackWidth > 0
       ? clamp(safeTrackWidth * (visibleCols / Math.max(1, totalCols)), minThumbWidth, safeTrackWidth)
       : 0;
@@ -1994,6 +2000,15 @@
       thumbWidth,
       travel
     };
+  }
+
+  function trackColFromClientX(clientX) {
+    if (!timelineTrack) {
+      return 0;
+    }
+    const rect = timelineTrack.getBoundingClientRect();
+    const ratio = clamp((clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+    return ratio * trackColCount();
   }
 
   function transportDuration() {
@@ -2793,15 +2808,110 @@
     if (!timelineTrack || !timelineThumb) {
       return;
     }
+    updateTimelineOverview();
     const metrics = timelineMetrics();
     const ratio = metrics.maxOffset > 0 ? state.viewOffsetCol / metrics.maxOffset : 0;
     const left = metrics.travel * ratio;
     timelineThumb.style.width = `${metrics.thumbWidth}px`;
     timelineThumb.style.transform = `translateX(${left}px)`;
+    timelineThumb.classList.toggle("is-resizing-left", state.timelineDragMode === "resize-left");
+    timelineThumb.classList.toggle("is-resizing-right", state.timelineDragMode === "resize-right");
     timelineTrack.setAttribute("aria-valuemin", "0");
     timelineTrack.setAttribute("aria-valuemax", String(metrics.maxOffset));
     timelineTrack.setAttribute("aria-valuenow", String(Math.round(state.viewOffsetCol)));
     timelineTrack.setAttribute("aria-valuetext", timelineOut.textContent);
+  }
+
+  function updateTimelineOverview() {
+    if (!timelineOverview || !timelineOverviewCtx || !timelineTrack) {
+      return;
+    }
+    const rect = timelineTrack.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    if (timelineOverview.width !== width || timelineOverview.height !== height) {
+      timelineOverview.width = width;
+      timelineOverview.height = height;
+      state.timelineOverviewCacheKey = "";
+    }
+
+    const tab = currentTabRecord();
+    const visibilityKey = tab
+      ? tab.layers.map((layer) => `${layer.id}:${layer.visible !== false ? 1 : 0}`).join("|")
+      : "single";
+    const cacheKey = [
+      state.currentTabId || "none",
+      state.dataVersion,
+      visibilityKey,
+      state.editorView,
+      frequencyAxisMode(),
+      Math.round(effectiveMinFrequency()),
+      Math.round(effectiveMaxFrequency()),
+      trackColCount(),
+      width,
+      height
+    ].join(":");
+    if (state.timelineOverviewCacheKey === cacheKey) {
+      return;
+    }
+    state.timelineOverviewCacheKey = cacheKey;
+
+    const composite = currentRenderLayerState();
+    const image = timelineOverviewCtx.createImageData(width, height);
+    const pixels = image.data;
+    const totalCols = trackColCount();
+
+    for (let col = 0; col < totalCols; col += 1) {
+      const x0 = Math.floor((col / totalCols) * width);
+      const x1 = Math.max(x0 + 1, Math.floor(((col + 1) / totalCols) * width));
+      for (let row = 0; row < GRID_ROWS; row += 1) {
+        const index = gridIndex(col, row);
+        const drawValue = composite.drawData[index];
+        const bassValue = composite.basslineData[index];
+        if (drawValue <= EPSILON && bassValue <= EPSILON) {
+          continue;
+        }
+        const y0 = Math.floor((row / GRID_ROWS) * height);
+        const y1 = Math.max(y0 + 1, Math.floor(((row + 1) / GRID_ROWS) * height));
+        const [r, g, b, a] = layeredColor(bassValue, drawValue);
+        for (let y = y0; y < y1; y += 1) {
+          for (let x = x0; x < x1; x += 1) {
+            const pixelIndex = (y * width + x) * 4;
+            if (a > pixels[pixelIndex + 3]) {
+              pixels[pixelIndex] = r;
+              pixels[pixelIndex + 1] = g;
+              pixels[pixelIndex + 2] = b;
+              pixels[pixelIndex + 3] = a;
+            }
+          }
+        }
+      }
+    }
+
+    for (const note of composite.scoreEvents) {
+      const startCol = colFromTime(note.startSec);
+      const endCol = colFromTime(note.startSec + Math.max(0.02, note.durationSec));
+      const x0 = clamp(Math.floor((startCol / Math.max(1, totalCols - 1)) * width), 0, width - 1);
+      const x1 = clamp(Math.max(x0 + 1, Math.ceil((endCol / Math.max(1, totalCols - 1)) * width)), 1, width);
+      const topRow = clamp(rowFromFreq(midiToFreq(note.midi + 0.48)), 0, GRID_ROWS - 1);
+      const bottomRow = clamp(rowFromFreq(midiToFreq(note.midi - 0.48)), 0, GRID_ROWS - 1);
+      const y0 = clamp(Math.min(topRow, bottomRow) / GRID_ROWS * height, 0, height - 1);
+      const y1 = clamp(Math.max(topRow, bottomRow) / GRID_ROWS * height, 0, height - 1);
+      const yStart = Math.max(0, Math.floor(y0));
+      const yEnd = Math.min(height, Math.max(yStart + 1, Math.ceil(y1 + 1)));
+      for (let y = yStart; y < yEnd; y += 1) {
+        for (let x = x0; x < x1; x += 1) {
+          const pixelIndex = (y * width + x) * 4;
+          pixels[pixelIndex] = Math.max(pixels[pixelIndex], 255);
+          pixels[pixelIndex + 1] = Math.max(pixels[pixelIndex + 1], 228);
+          pixels[pixelIndex + 2] = Math.max(pixels[pixelIndex + 2], 170);
+          pixels[pixelIndex + 3] = 255;
+        }
+      }
+    }
+
+    timelineOverviewCtx.putImageData(image, 0, 0);
   }
 
   function freqFromRow(row) {
@@ -7964,13 +8074,23 @@
     }
     event.preventDefault();
     const thumbRect = timelineThumb.getBoundingClientRect();
+    const hitLeftHandle = event.target === timelineThumbHandleLeft;
+    const hitRightHandle = event.target === timelineThumbHandleRight;
     const hitThumb = event.target === timelineThumb
+      || hitLeftHandle
+      || hitRightHandle
       || (event.clientX >= thumbRect.left && event.clientX <= thumbRect.right
         && event.clientY >= thumbRect.top && event.clientY <= thumbRect.bottom);
 
-    if (hitThumb) {
+    if (hitLeftHandle) {
+      state.timelineDragMode = "resize-left";
+    } else if (hitRightHandle) {
+      state.timelineDragMode = "resize-right";
+    } else if (hitThumb) {
+      state.timelineDragMode = "move";
       state.timelineDragOffsetPx = clamp(event.clientX - thumbRect.left, 0, thumbRect.width || 0);
     } else {
+      state.timelineDragMode = "";
       state.timelineDragOffsetPx = thumbRect.width * 0.5;
       setViewOffset(trackOffsetFromClientX(event.clientX, state.timelineDragOffsetPx));
     }
@@ -7984,6 +8104,19 @@
     if (!state.isDraggingTimelineThumb) {
       return;
     }
+    const minSpan = Math.min(MIN_VIEW_COLS, trackColCount());
+    if (state.timelineDragMode === "resize-left") {
+      const rightEdge = state.viewOffsetCol + visibleColCount();
+      const nextLeft = clamp(Math.round(trackColFromClientX(event.clientX)), 0, Math.max(0, rightEdge - minSpan));
+      setViewWindow(nextLeft, rightEdge - nextLeft);
+      return;
+    }
+    if (state.timelineDragMode === "resize-right") {
+      const leftEdge = state.viewOffsetCol;
+      const nextRight = clamp(Math.round(trackColFromClientX(event.clientX)), Math.min(trackColCount(), leftEdge + minSpan), trackColCount());
+      setViewWindow(leftEdge, nextRight - leftEdge);
+      return;
+    }
     setViewOffset(trackOffsetFromClientX(event.clientX, state.timelineDragOffsetPx));
   }
 
@@ -7992,7 +8125,9 @@
       return;
     }
     state.isDraggingTimelineThumb = false;
+    state.timelineDragMode = "";
     timelineThumb.classList.remove("is-dragging");
+    timelineThumb.classList.remove("is-resizing-left", "is-resizing-right");
     if (event && timelineTrack.hasPointerCapture(event.pointerId)) {
       timelineTrack.releasePointerCapture(event.pointerId);
     }

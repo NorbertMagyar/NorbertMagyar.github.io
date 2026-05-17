@@ -504,11 +504,15 @@
 
               <div class="timeline-bar" aria-label="Timeline viewport">
                 <label class="timeline-label" for="timeline-track">
-                  <span>Visible window</span>
+                  <span>Timeline overview</span>
                   <output id="timeline-out">0.00 s - 6.00 s</output>
                 </label>
                 <div id="timeline-track" class="timeline-track" role="scrollbar" aria-label="Timeline scrollbar" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0">
-                  <div id="timeline-thumb" class="timeline-thumb"></div>
+                  <canvas id="timeline-overview" class="timeline-overview" width="1200" height="128" aria-hidden="true"></canvas>
+                  <div id="timeline-thumb" class="timeline-thumb">
+                    <span id="timeline-thumb-handle-left" class="timeline-thumb-handle is-left" aria-hidden="true"></span>
+                    <span id="timeline-thumb-handle-right" class="timeline-thumb-handle is-right" aria-hidden="true"></span>
+                  </div>
                 </div>
               </div>
                 </div>
