@@ -45,6 +45,45 @@
     const DEFAULT_GUITAR_BODY_RESONANCE = 0.92;
     const DEFAULT_PIANO_HAMMER_HARDNESS = 0.84;
     const DEFAULT_PIANO_STRING_COUPLING = 0.9;
+    const SMPLR_RENDER_WINDOW_SECONDS = 12;
+    const SMPLR_RENDER_PREROLL_SECONDS = 1.4;
+    const SMPLR_RENDER_TAIL_SECONDS = 1.4;
+    const LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS = 0.75;
+    const SMPLR_MODULE_URL = "https://unpkg.com/smplr/dist/index.mjs";
+    const SMPLR_NOTE_BACKENDS = {
+      "piano-samples": {
+        label: "Piano samples",
+        kind: "splendid-piano"
+      },
+      "violin-samples": {
+        label: "Violin samples",
+        kind: "soundfont",
+        instrument: "violin",
+        kit: "MusyngKite",
+        loadLoopData: true
+      },
+      "cello-samples": {
+        label: "Cello samples",
+        kind: "soundfont",
+        instrument: "cello",
+        kit: "MusyngKite",
+        loadLoopData: true
+      },
+      "steel-guitar-samples": {
+        label: "Steel guitar samples",
+        kind: "soundfont",
+        instrument: "acoustic_guitar_steel",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "nylon-guitar-samples": {
+        label: "Nylon guitar samples",
+        kind: "soundfont",
+        instrument: "acoustic_guitar_nylon",
+        kit: "MusyngKite",
+        loadLoopData: false
+      }
+    };
 
     const canvas = document.getElementById("spectrogram-canvas");
     if (!canvas) {
@@ -78,6 +117,7 @@
     const basslineSelect = document.getElementById("bassline-select");
     const basslineBpmInput = document.getElementById("bassline-bpm-input");
     const renderModeSelect = document.getElementById("render-mode-select");
+    const noteBackendSelect = document.getElementById("note-backend-select");
     const renderModeLabel = document.getElementById("render-mode-label");
     const renderModeDescriptionEl = document.getElementById("render-mode-description");
     const phaseDiagnosticsToggle = document.getElementById("phase-diagnostics-toggle");
@@ -189,6 +229,7 @@
         layers: { draw: true, bass: true, score: true }
       },
       renderPromise: null,
+      previewBasePromise: null,
       renderOverlayHideTimer: 0,
       sessionSaveTimer: 0,
       renderToken: 0,
@@ -210,12 +251,24 @@
       sourceNode: null,
       playStartedAt: 0,
       playDurationSeconds: durationSeconds(),
+      previewBaseBuffer: null,
+      previewBaseCache: null,
+      liveSampleInstrument: null,
+      liveSampleScheduler: null,
+      liveSampleGainNode: null,
+      liveSampleStopFns: [],
+      liveSampleScheduledUntilSec: 0,
+      liveSampleSessionId: 0,
+      liveSampleUsesProgressive: false,
       bassEvents,
       scoreEvents: [],
       currentBasslinePreset: "none",
       editorView: "spectrogram",
       frequencyAxis: frequencyAxisSelect ? frequencyAxisSelect.value || "log" : "log",
       renderMode: "geometry",
+      noteBackend: noteBackendSelect ? noteBackendSelect.value || "procedural" : "procedural",
+      noteBackendResolved: noteBackendSelect ? noteBackendSelect.value || "procedural" : "procedural",
+      noteBackendWarning: "",
       showPhaseDiagnostics: false,
       loopPlayback: false,
       dataVersion: 0,
@@ -233,6 +286,14 @@
       },
       freeMinFreq: Number(minFreqInput.value),
       freeMaxFreq: Number(maxFreqInput.value)
+    };
+    const smplrModuleState = {
+      loadingPromise: null,
+      module: null
+    };
+    const smplrLoaderState = {
+      loader: null,
+      module: null
     };
 
   function plotWidth() {
@@ -459,6 +520,34 @@
     return `${names[((rounded % 12) + 12) % 12]}${octave}`;
   }
 
+  function midiFromNoteName(noteName) {
+    const match = /^([A-Ga-g])([#b]?)(-?\d+)$/.exec(String(noteName).trim());
+    if (!match) {
+      return null;
+    }
+    const [, baseRaw, accidental, octaveRaw] = match;
+    const base = baseRaw.toUpperCase();
+    const basePitch = {
+      C: 0,
+      D: 2,
+      E: 4,
+      F: 5,
+      G: 7,
+      A: 9,
+      B: 11
+    }[base];
+    if (typeof basePitch !== "number") {
+      return null;
+    }
+    const accidentalOffset = accidental === "#"
+      ? 1
+      : accidental === "b"
+        ? -1
+        : 0;
+    const octave = Number(octaveRaw);
+    return (octave + 1) * 12 + basePitch + accidentalOffset;
+  }
+
   function currentScoreProfile() {
     return SCORE_VIEW_PROFILES[state.editorView] || null;
   }
@@ -679,6 +768,23 @@
     return analysis.energy.some((value) => value > EPSILON);
   }
 
+  function layerHasEnergy(layer) {
+    for (let i = 0; i < layer.length; i += 1) {
+      if (layer[i] > EPSILON) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function sampleNoteBackendSupportsProgressivePlay() {
+    return Boolean(SMPLR_NOTE_BACKENDS[state.noteBackend] && state.scoreEvents.length);
+  }
+
+  function hasPreviewBaseLayers() {
+    return state.bassEvents.length > 0 || layerHasEnergy(drawData);
+  }
+
   function hasCurrentRenderedBuffer() {
     if (!state.renderedBuffer) {
       return false;
@@ -691,6 +797,9 @@
         return false;
       }
       if (state.renderCache.renderMode !== state.renderMode) {
+        return false;
+      }
+      if (state.renderCache.noteBackend !== state.noteBackend) {
         return false;
       }
     }
@@ -923,6 +1032,25 @@
       return "Geometry-coherent synthesis refined using Griffin-Lim consistency iterations.";
     }
     return "Tracks continuous painted structures as coherent oscillators with inferred physical phase behavior.";
+  }
+
+  function noteBackendName(backend = state.noteBackend) {
+    if (backend === "procedural") {
+      return "Procedural synth";
+    }
+    if (SMPLR_NOTE_BACKENDS[backend]) {
+      return SMPLR_NOTE_BACKENDS[backend].label;
+    }
+    return "Procedural synth";
+  }
+
+  function resolvedNoteBackendName() {
+    return noteBackendName(state.noteBackendResolved || state.noteBackend);
+  }
+
+  function isValidNoteBackend(backend) {
+    return backend === "procedural"
+      || Boolean(SMPLR_NOTE_BACKENDS[backend]);
   }
 
   function clamp(value, min, max) {
@@ -1307,7 +1435,8 @@
       && rangeStartSec !== null
       && rangeEndSec !== null
       && state.renderCache.totalSamples === totalRenderSamples()
-      && state.renderCache.renderMode === state.renderMode;
+      && state.renderCache.renderMode === state.renderMode
+      && state.renderCache.noteBackend === state.noteBackend;
     if (!canIncremental) {
       state.dirtyRender = {
         full: true,
@@ -1479,6 +1608,7 @@
         basslineBpm: basslineBpm(),
         editorView: state.editorView,
         renderMode: state.renderMode,
+        noteBackend: state.noteBackend,
         frequencyAxis: frequencyAxisMode(),
         showPhaseDiagnostics: state.showPhaseDiagnostics,
         loopPlayback: state.loopPlayback,
@@ -1578,6 +1708,7 @@
       ? settings.editorView
       : "spectrogram";
     state.renderMode = typeof settings.renderMode === "string" ? settings.renderMode : "geometry";
+    state.noteBackend = isValidNoteBackend(settings.noteBackend) ? settings.noteBackend : "procedural";
     state.frequencyAxis = settings.frequencyAxis === "linear" ? "linear" : "log";
     state.showPhaseDiagnostics = Boolean(settings.showPhaseDiagnostics);
     state.loopPlayback = Boolean(settings.loopPlayback);
@@ -1604,6 +1735,9 @@
     }
     if (renderModeSelect) {
       renderModeSelect.value = state.renderMode;
+    }
+    if (noteBackendSelect) {
+      noteBackendSelect.value = state.noteBackend;
     }
     if (frequencyAxisSelect) {
       frequencyAxisSelect.value = state.frequencyAxis;
@@ -1785,6 +1919,10 @@
     if (renderModeSelect) {
       renderModeSelect.value = state.renderMode;
       renderModeSelect.title = renderModeDescription(state.renderMode);
+    }
+    if (noteBackendSelect) {
+      noteBackendSelect.value = state.noteBackend;
+      noteBackendSelect.title = noteBackendName(state.noteBackend);
     }
     if (frequencyAxisSelect) {
       frequencyAxisSelect.value = frequencyAxisMode();
@@ -2629,8 +2767,57 @@
     state.sourceNode = null;
   }
 
+  function stopLiveSamplePlayback() {
+    if (state.liveSampleGainNode && state.audioContext) {
+      try {
+        state.liveSampleGainNode.gain.cancelScheduledValues(state.audioContext.currentTime);
+        state.liveSampleGainNode.gain.setValueAtTime(0, state.audioContext.currentTime);
+      } catch (error) {
+        // Ignore gain shutdown races.
+      }
+    }
+    if (state.liveSampleScheduler) {
+      try {
+        state.liveSampleScheduler.stop();
+      } catch (error) {
+        // Ignore scheduler shutdown races.
+      }
+    }
+    if (state.liveSampleInstrument) {
+      try {
+        state.liveSampleInstrument.stop();
+      } catch (error) {
+        // Ignore instrument stop races.
+      }
+    }
+    if (state.liveSampleStopFns.length) {
+      for (const stopFn of state.liveSampleStopFns) {
+        try {
+          stopFn();
+        } catch (error) {
+          // Ignore note stop races during transport changes.
+        }
+      }
+    }
+    state.liveSampleStopFns = [];
+    state.liveSampleInstrument = null;
+    state.liveSampleScheduler = null;
+    if (state.liveSampleGainNode) {
+      try {
+        state.liveSampleGainNode.disconnect();
+      } catch (error) {
+        // Ignore repeated disconnects.
+      }
+    }
+    state.liveSampleGainNode = null;
+    state.liveSampleScheduledUntilSec = 0;
+    state.liveSampleUsesProgressive = false;
+    state.liveSampleSessionId += 1;
+  }
+
   function stopPlayback(statusMessage) {
     stopActiveSource();
+    stopLiveSamplePlayback();
     state.isPlaying = false;
     state.isPaused = false;
     state.isScrubbingPlayhead = false;
@@ -2649,22 +2836,24 @@
   }
 
   function pausePlayback() {
-    if (!state.isPlaying || !state.audioContext || !state.renderedBuffer) {
+    const playbackDuration = Math.max(0, state.playDurationSeconds || (state.renderedBuffer ? state.renderedBuffer.duration : 0));
+    if (!state.isPlaying || !state.audioContext || playbackDuration <= 0) {
       return;
     }
     let offset = clamp(
       state.audioContext.currentTime - state.playStartedAt,
       0,
-      state.renderedBuffer.duration
+      playbackDuration
     );
-    if (state.loopPlayback && state.renderedBuffer.duration > 0) {
-      offset = ((offset % state.renderedBuffer.duration) + state.renderedBuffer.duration) % state.renderedBuffer.duration;
+    if (state.loopPlayback && playbackDuration > 0) {
+      offset = ((offset % playbackDuration) + playbackDuration) % playbackDuration;
     }
     stopActiveSource();
+    stopLiveSamplePlayback();
     state.isPlaying = false;
     state.isPaused = true;
     state.pausedOffsetSeconds = offset;
-    state.playheadRatio = state.renderedBuffer.duration > 0 ? offset / state.renderedBuffer.duration : 0;
+    state.playheadRatio = playbackDuration > 0 ? offset / playbackDuration : 0;
     if (state.rafId) {
       cancelAnimationFrame(state.rafId);
       state.rafId = 0;
@@ -2675,12 +2864,19 @@
   }
 
   function animatePlayhead() {
-    if (!state.isPlaying || !state.audioContext || !state.renderedBuffer) {
+    if (!state.isPlaying || !state.audioContext) {
       state.rafId = 0;
       return;
     }
     const elapsed = state.audioContext.currentTime - state.playStartedAt;
-    const duration = state.renderedBuffer.duration;
+    const duration = Math.max(0, state.playDurationSeconds || (state.renderedBuffer ? state.renderedBuffer.duration : 0));
+    if (duration <= 0) {
+      state.rafId = 0;
+      return;
+    }
+    if (state.liveSampleUsesProgressive) {
+      scheduleLiveSampleNotes();
+    }
     if (state.loopPlayback && duration > 0) {
       const wrappedElapsed = ((elapsed % duration) + duration) % duration;
       const loopIndex = Math.floor(Math.max(0, elapsed) / duration);
@@ -2692,6 +2888,10 @@
         followPlaybackViewport();
       }
     } else {
+      if (elapsed >= duration && (!state.sourceNode || state.liveSampleUsesProgressive)) {
+        stopPlayback("Playback finished.");
+        return;
+      }
       state.playheadRatio = clamp(elapsed / duration, 0, 1);
       followPlaybackViewport();
     }
@@ -3966,6 +4166,166 @@
     return output;
   }
 
+  async function ensureSmplrModuleLoaded() {
+    if (smplrModuleState.module) {
+      return smplrModuleState.module;
+    }
+    if (smplrModuleState.loadingPromise) {
+      return smplrModuleState.loadingPromise;
+    }
+    smplrModuleState.loadingPromise = import(SMPLR_MODULE_URL)
+      .then((module) => {
+        smplrModuleState.module = module;
+        smplrModuleState.loadingPromise = null;
+        return module;
+      })
+      .catch((error) => {
+        smplrModuleState.loadingPromise = null;
+        throw error;
+      });
+    return smplrModuleState.loadingPromise;
+  }
+
+  function getOfflineAudioContextClass() {
+    return window.OfflineAudioContext || window.webkitOfflineAudioContext || null;
+  }
+
+  function createSmplrOfflineScheduler(module, context, renderDurationSec) {
+    const lookaheadMs = Math.max(1000, Math.ceil((renderDurationSec + 1) * 1000));
+    return new module.Scheduler(context, {
+      lookaheadMs,
+      intervalMs: lookaheadMs
+    });
+  }
+
+  async function createSmplrInstrumentForContext(module, context, backend, options = {}) {
+    return createSmplrInstrumentInstance(module, context, backend, options).load;
+  }
+
+  function createSmplrInstrumentInstance(module, context, backend, options = {}) {
+    const definition = SMPLR_NOTE_BACKENDS[backend];
+    if (!definition) {
+      throw new Error(`Unknown smplr note backend: ${backend}`);
+    }
+    const sharedOptions = {
+      scheduler: options.scheduler || void 0,
+      loader: options.loader || void 0,
+      destination: options.destination || void 0
+    };
+    if (definition.kind === "splendid-piano") {
+      return module.SplendidGrandPiano(context, {
+        volume: 112,
+        ...sharedOptions
+      });
+    }
+    if (definition.kind === "soundfont") {
+      return module.Soundfont(context, {
+        instrument: definition.instrument,
+        kit: definition.kit,
+        loadLoopData: Boolean(definition.loadLoopData),
+        volume: 108,
+        ...sharedOptions
+      });
+    }
+    throw new Error(`Unsupported smplr backend kind: ${definition.kind}`);
+  }
+
+  function ensureSmplrSharedLoader(module) {
+    if (smplrLoaderState.loader && smplrLoaderState.module === module) {
+      return smplrLoaderState.loader;
+    }
+    smplrLoaderState.loader = new module.SampleLoader(createAudioContext());
+    smplrLoaderState.module = module;
+    return smplrLoaderState.loader;
+  }
+
+  async function renderSmplrScoreEvents(totalSamples, backend, options = {}) {
+    const writeStartSample = clamp(options.rangeStartSample ?? 0, 0, totalSamples);
+    const writeEndSample = clamp(options.rangeEndSample ?? totalSamples, writeStartSample, totalSamples);
+    const writeStartSec = writeStartSample / RENDER_SAMPLE_RATE;
+    const writeEndSec = writeEndSample / RENDER_SAMPLE_RATE;
+    const tailSeconds = SMPLR_RENDER_TAIL_SECONDS;
+    const prerollSeconds = SMPLR_RENDER_PREROLL_SECONDS;
+    const stitchedSamples = new Float32Array(writeEndSample - writeStartSample);
+    const relevantNotes = state.scoreEvents.filter((note) => {
+      const noteStart = note.startSec;
+      const noteEnd = note.startSec + Math.max(0.02, note.durationSec) + tailSeconds;
+      return noteEnd > writeStartSec && noteStart < writeEndSec;
+    });
+    if (!relevantNotes.length) {
+      return {
+        samples: stitchedSamples,
+        startSample: writeStartSample
+      };
+    }
+    const smplr = await ensureSmplrModuleLoaded();
+    const loader = ensureSmplrSharedLoader(smplr);
+    const totalSpanSec = Math.max(0.001, writeEndSec - writeStartSec);
+    const windowCount = Math.max(1, Math.ceil(totalSpanSec / SMPLR_RENDER_WINDOW_SECONDS));
+
+    for (let windowIndex = 0; windowIndex < windowCount; windowIndex += 1) {
+      const mainStartSec = writeStartSec + windowIndex * SMPLR_RENDER_WINDOW_SECONDS;
+      const mainEndSec = Math.min(writeEndSec, mainStartSec + SMPLR_RENDER_WINDOW_SECONDS);
+      const renderStartSec = Math.max(0, mainStartSec - prerollSeconds);
+      const renderEndSec = Math.min(durationSeconds(), mainEndSec + tailSeconds);
+      const renderDurationSec = Math.max(0.05, renderEndSec - renderStartSec);
+      const windowNotes = relevantNotes.filter((note) => {
+        const noteStart = note.startSec;
+        const noteEnd = note.startSec + Math.max(0.02, note.durationSec) + tailSeconds;
+        return noteEnd > renderStartSec && noteStart < renderEndSec;
+      });
+
+      if (windowNotes.length) {
+        const renderedResult = await smplr.renderOffline(async (context) => {
+          // smplr instruments normally queue future notes through a scheduler.
+          // During OfflineAudioContext setup, currentTime does not advance yet, so
+          // a short default lookahead can schedule only the earliest notes. Give the
+          // offline scheduler a lookahead that spans the whole render window so all
+          // note starts are dispatched before startRendering().
+          const scheduler = createSmplrOfflineScheduler(smplr, context, renderDurationSec);
+          const instrument = await createSmplrInstrumentForContext(smplr, context, backend, { scheduler, loader });
+          for (let i = 0; i < windowNotes.length; i += 1) {
+            const note = windowNotes[i];
+            const velocity = clamp(Math.round((note.velocity || 0.78) * 127), 1, 127);
+            instrument.start({
+              note: note.midi,
+              velocity,
+              time: Math.max(0, note.startSec - renderStartSec),
+              duration: Math.max(0.02, note.durationSec)
+            });
+          }
+        }, {
+          duration: renderDurationSec,
+          sampleRate: RENDER_SAMPLE_RATE,
+          channels: 1
+        });
+
+        const channelData = renderedResult.audioBuffer.getChannelData(0);
+        const targetStart = clamp(Math.floor(mainStartSec * RENDER_SAMPLE_RATE) - writeStartSample, 0, stitchedSamples.length);
+        const targetEnd = clamp(Math.ceil(mainEndSec * RENDER_SAMPLE_RATE) - writeStartSample, targetStart, stitchedSamples.length);
+        const sourceStart = Math.max(0, Math.floor((mainStartSec - renderStartSec) * RENDER_SAMPLE_RATE));
+        const copyLength = targetEnd - targetStart;
+        for (let i = 0; i < copyLength; i += 1) {
+          const sourceIndex = sourceStart + i;
+          if (sourceIndex >= channelData.length) {
+            break;
+          }
+          stitchedSamples[targetStart + i] = channelData[sourceIndex];
+        }
+      }
+
+      options.onProgress?.(
+        (windowIndex + 1) / windowCount,
+        `Rendering sampled notes window ${windowIndex + 1}/${windowCount}`,
+        `${Math.round(((windowIndex + 1) / windowCount) * 100)}%`
+      );
+    }
+    return {
+      samples: stitchedSamples,
+      startSample: writeStartSample
+    };
+  }
+
   function addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample = 0, writeEndSample = output.length) {
     let phase1 = deterministicPhase(note.midi * 0.37 + note.startSec * 1.9);
     const duration = Math.max(0.02, note.durationSec);
@@ -4275,13 +4635,13 @@
     }
   }
 
-  async function buildScoreEventAudioData(totalSamples, renderMode = state.renderMode, options = {}) {
+  async function buildScoreEventAudioData(totalSamples, renderMode = state.renderMode, noteBackend = state.noteBackend, options = {}) {
     const output = options.targetOutput || new Float32Array(totalSamples);
     if (!state.scoreEvents.length) {
       if (options.targetOutput) {
         const emptyStart = clamp(options.rangeStartSample ?? 0, 0, totalSamples);
         const emptyEnd = clamp(options.rangeEndSample ?? totalSamples, emptyStart, totalSamples);
-        clearSampleRange(output, emptyStart, emptyEnd);
+      clearSampleRange(output, emptyStart, emptyEnd);
       }
       return output;
     }
@@ -4292,10 +4652,50 @@
       rangeStartSample = 0,
       rangeEndSample = totalSamples
     } = options;
+    let effectiveNoteBackend = noteBackend;
+    state.noteBackendResolved = effectiveNoteBackend;
+    state.noteBackendWarning = "";
+    if (SMPLR_NOTE_BACKENDS[effectiveNoteBackend]) {
+      const backendLabel = noteBackendName(effectiveNoteBackend);
+      onProgress?.(progressStart, `Loading ${backendLabel.toLowerCase()}`, "Preparing smplr note backend");
+      try {
+        await ensureSmplrModuleLoaded();
+      } catch (error) {
+        effectiveNoteBackend = "procedural";
+        state.noteBackendResolved = effectiveNoteBackend;
+        state.noteBackendWarning = `${backendLabel} unavailable, so note playback fell back to the procedural backend (${error && error.message ? error.message : String(error)}).`;
+        onProgress?.(progressStart, `${backendLabel} unavailable`, "Using procedural note fallback");
+      }
+    }
+    state.noteBackendResolved = effectiveNoteBackend;
     const writeStartSample = clamp(rangeStartSample, 0, totalSamples);
     const writeEndSample = clamp(rangeEndSample, writeStartSample, totalSamples);
     if (options.targetOutput) {
       clearSampleRange(output, writeStartSample, writeEndSample);
+    }
+    if (SMPLR_NOTE_BACKENDS[effectiveNoteBackend]) {
+      try {
+        const rendered = await renderSmplrScoreEvents(totalSamples, effectiveNoteBackend, {
+          rangeStartSample: writeStartSample,
+          rangeEndSample: writeEndSample,
+          onProgress: (ratio, detail, progressText) => {
+            const mapped = lerp(progressStart, progressEnd, ratio);
+            onProgress?.(mapped, detail, progressText || `${Math.round(mapped * 100)}%`);
+          }
+        });
+        if (options.targetOutput) {
+          clearSampleRange(output, writeStartSample, writeEndSample);
+        }
+        output.set(rendered.samples, rendered.startSample);
+        state.noteBackendResolved = effectiveNoteBackend;
+        return output;
+      } catch (error) {
+        const failedBackend = effectiveNoteBackend;
+        effectiveNoteBackend = "procedural";
+        state.noteBackendResolved = effectiveNoteBackend;
+        state.noteBackendWarning = `${noteBackendName(failedBackend)} backend failed, so note playback fell back to ${noteBackendName(effectiveNoteBackend).toLowerCase()} (${error && error.message ? error.message : String(error)}).`;
+        onProgress?.(progressStart, `${noteBackendName(failedBackend)} failed`, `Falling back to ${noteBackendName(effectiveNoteBackend).toLowerCase()}`);
+      }
     }
     const maybeYield = shouldUseCooperativeRender(totalSamples, state.scoreEvents.length)
       ? createRenderYieldController()
@@ -4321,29 +4721,33 @@
       const freq = midiToFreq(note.midi);
 
       try {
-        switch (renderMode) {
-          case "independent":
-            addIndependentScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
-            break;
-          case "spectral":
-            addSpectralScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
-            break;
-          case "griffin":
-            addGriffinScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
-            break;
-          case "hybrid":
-            addHybridScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
-            break;
-          case "piano":
-            addPianoScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
-            break;
-          case "guitar":
-            addGuitarScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
-            break;
-          case "geometry":
-          default:
-            addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
-            break;
+        if (effectiveNoteBackend === "procedural") {
+          switch (renderMode) {
+            case "independent":
+              addIndependentScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
+              break;
+            case "spectral":
+              addSpectralScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
+              break;
+            case "griffin":
+              addGriffinScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
+              break;
+            case "hybrid":
+              addHybridScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
+              break;
+            case "piano":
+              addPianoScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
+              break;
+            case "guitar":
+              addGuitarScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
+              break;
+            case "geometry":
+            default:
+              addGeometryScoreNote(output, startSample, sampleLength, note, velocity, freq, writeStartSample, writeEndSample);
+              break;
+          }
+        } else {
+          throw new Error(`Unsupported note backend "${effectiveNoteBackend}"`);
         }
       } catch (error) {
         throw new Error(
@@ -4895,7 +5299,7 @@
     const maybeYield = shouldUseCooperativeRender(totalSamples, state.scoreEvents.length)
       ? createRenderYieldController()
       : null;
-    const score = await buildScoreEventAudioData(totalSamples, state.renderMode, {
+    const score = await buildScoreEventAudioData(totalSamples, state.renderMode, state.noteBackend, {
       onProgress,
       progressStart: scoreProgressStart,
       progressEnd: scoreProgressEnd
@@ -4942,7 +5346,9 @@
     await normalizeAudioData(output, maybeYield);
     onProgress?.(0.992, "Applying output fade");
     await applyEdgeFade(output, maybeYield);
-    const scoreModeLabel = state.scoreEvents.length ? `${scoreViewLabel()} note events` : "";
+    const scoreModeLabel = state.scoreEvents.length
+      ? `${scoreViewLabel()} note events via ${resolvedNoteBackendName()}`
+      : "";
     return {
       samples: output,
       rawMix: mixedRaw,
@@ -4967,7 +5373,7 @@
     }
 
     const totalSamples = totalRenderSamples();
-    if (cache.totalSamples !== totalSamples || cache.renderMode !== state.renderMode) {
+    if (cache.totalSamples !== totalSamples || cache.renderMode !== state.renderMode || cache.noteBackend !== state.noteBackend) {
       state.dirtyRender.full = true;
       return buildAudioData(options);
     }
@@ -5040,7 +5446,7 @@
 
     onProgress?.(0.52, "Updating changed section");
     if (state.dirtyRender.layers.score) {
-      await buildScoreEventAudioData(totalSamples, state.renderMode, {
+      await buildScoreEventAudioData(totalSamples, state.renderMode, state.noteBackend, {
         targetOutput: cache.scoreSamples,
         rangeStartSample: startSample,
         rangeEndSample: endSample,
@@ -5075,7 +5481,9 @@
       analysis = analyzeColumns();
       tracks = hasDrawLayerEnergy(analysis) ? extractDrawVoiceTracks(analysis) : [];
     }
-    const scoreModeLabel = state.scoreEvents.length ? `${scoreViewLabel()} note events` : "";
+    const scoreModeLabel = state.scoreEvents.length
+      ? `${scoreViewLabel()} note events via ${resolvedNoteBackendName()}`
+      : "";
     return {
       samples: output,
       rawMix: cache.rawMix,
@@ -5090,6 +5498,137 @@
       tracks,
       analysis
     };
+  }
+
+  async function buildPreviewBaseAudioData(options = {}) {
+    const { onProgress } = options;
+    const totalSamples = Math.max(1, Math.floor(durationSeconds() * RENDER_SAMPLE_RATE));
+    const analysis = analyzeColumns();
+    const bass = buildBassEventAudioData(totalSamples);
+    const hasDrawEnergy = hasDrawLayerEnergy(analysis);
+    const tracks = hasDrawEnergy ? extractDrawVoiceTracks(analysis) : [];
+    let iterations = 0;
+    let drawRender = {
+      samples: new Float32Array(totalSamples),
+      tracks,
+      iterations: 0
+    };
+
+    onProgress?.(0.08, "Preparing freehand and bass layers");
+    if (hasDrawEnergy) {
+      drawRender = await buildDrawLayerAudioData(analysis, totalSamples, tracks, {
+        onStatus: (detail) => onProgress?.(0.28, detail),
+        onProgress: (iteration, totalIterations) => {
+          onProgress?.(lerp(0.28, 0.72, iteration / totalIterations), `Griffin-Lim iteration ${iteration}/${totalIterations}`);
+        },
+        onHybridProgress: (fraction, detail) => {
+          onProgress?.(lerp(0.28, 0.72, fraction), detail);
+        }
+      });
+    }
+
+    iterations = drawRender.iterations || 0;
+    const mixedRaw = new Float32Array(totalSamples);
+    onProgress?.(0.78, "Mixing freehand and bass layers");
+    for (let i = 0; i < mixedRaw.length; i += 1) {
+      mixedRaw[i] = drawRender.samples[i] + bass[i];
+    }
+    const output = mixedRaw.slice();
+    onProgress?.(0.9, "Normalizing preview base");
+    await normalizeAudioData(output, shouldUseCooperativeRender(totalSamples, 0) ? createRenderYieldController() : null);
+    onProgress?.(0.98, "Applying output fade");
+    await applyEdgeFade(output, null);
+    return {
+      samples: output,
+      totalSamples,
+      iterations,
+      analysis,
+      tracks,
+      drawSamples: drawRender.samples,
+      bassSamples: bass
+    };
+  }
+
+  function createBufferFromSamples(audioContext, samples) {
+    const buffer = audioContext.createBuffer(1, samples.length, RENDER_SAMPLE_RATE);
+    buffer.copyToChannel(samples, 0, 0);
+    return buffer;
+  }
+
+  function hasCurrentPreviewBaseBuffer() {
+    if (!state.previewBaseBuffer || !state.previewBaseCache) {
+      return false;
+    }
+    if (state.previewBaseCache.totalSamples !== totalRenderSamples()) {
+      return false;
+    }
+    if (state.previewBaseCache.renderMode !== state.renderMode) {
+      return false;
+    }
+    if (state.dirtyRender.full || state.dirtyRender.layers.draw || state.dirtyRender.layers.bass) {
+      return false;
+    }
+    return true;
+  }
+
+  async function renderPreviewBaseIfNeeded(reason) {
+    if (!hasPreviewBaseLayers()) {
+      state.previewBaseBuffer = null;
+      state.previewBaseCache = null;
+      return null;
+    }
+    if (hasCurrentPreviewBaseBuffer()) {
+      return state.previewBaseBuffer;
+    }
+    if (state.previewBasePromise) {
+      return state.previewBasePromise;
+    }
+    if (state.renderOverlayHideTimer) {
+      window.clearTimeout(state.renderOverlayHideTimer);
+      state.renderOverlayHideTimer = 0;
+    }
+    state.previewBasePromise = (async () => {
+      const overlayStartedAt = performance.now();
+      setRenderOverlay(true, {
+        title: "Preparing playback",
+        detail: `Preparing ${reason}`,
+        progress: null
+      });
+      await yieldToBrowser();
+      try {
+        const renderResult = await buildPreviewBaseAudioData({
+          onProgress: (progress, detail) => {
+            setRenderOverlay(true, {
+              title: "Preparing playback",
+              detail,
+              progress
+            });
+          }
+        });
+        const audioContext = createAudioContext();
+        const buffer = createBufferFromSamples(audioContext, renderResult.samples);
+        state.previewBaseBuffer = buffer;
+        state.previewBaseCache = {
+          totalSamples: renderResult.totalSamples,
+          renderMode: state.renderMode
+        };
+        return buffer;
+      } finally {
+        const visibleMs = performance.now() - overlayStartedAt;
+        if (visibleMs < 240) {
+          state.renderOverlayHideTimer = window.setTimeout(() => {
+            if (!state.previewBasePromise && !state.renderPromise) {
+              setRenderOverlay(false);
+            }
+            state.renderOverlayHideTimer = 0;
+          }, 240 - visibleMs);
+        } else {
+          setRenderOverlay(false);
+        }
+        state.previewBasePromise = null;
+      }
+    })();
+    return state.previewBasePromise;
   }
 
   function encodeWav(samples, sampleRate) {
@@ -5200,6 +5739,7 @@
         state.renderCache = {
           totalSamples: renderResult.totalSamples,
           renderMode: state.renderMode,
+          noteBackend: state.noteBackend,
           drawSamples: renderResult.drawSamples,
           scoreSamples: renderResult.scoreSamples,
           bassSamples: renderResult.bassSamples,
@@ -5233,7 +5773,8 @@
         state.dirty = false;
         const modeSummary = renderResult.modeLabel;
         const iterationSummary = renderResult.iterations > 0 ? ` · ${renderResult.iterations} iterations` : "";
-        setStatus(`Rendered using: ${modeSummary} · ${elapsedMs.toFixed(1)} ms · ${samples.length} samples${iterationSummary}`);
+        const backendWarning = state.noteBackendWarning ? ` · ${state.noteBackendWarning}` : "";
+        setStatus(`Rendered using: ${modeSummary} · ${elapsedMs.toFixed(1)} ms · ${samples.length} samples${iterationSummary}${backendWarning}`);
         return buffer;
       } catch (error) {
         reportBootError(error);
@@ -5257,12 +5798,163 @@
     return state.renderPromise;
   }
 
+  function scheduleLiveSampleStop(stopFn) {
+    state.liveSampleStopFns.push(stopFn);
+  }
+
+  function scheduleLiveNoteEvent(note, startTime, duration) {
+    if (!state.liveSampleInstrument || !state.audioContext || duration <= 0.02) {
+      return;
+    }
+    const velocity = clamp(Math.round((note.velocity || 0.78) * 127), 1, 127);
+    const stopFn = state.liveSampleInstrument.start({
+      note: note.midi,
+      velocity,
+      time: startTime,
+      duration
+    });
+    scheduleLiveSampleStop(stopFn);
+  }
+
+  function scheduleLiveSampleNotes(forceInitial = false) {
+    if (!state.liveSampleUsesProgressive || !state.liveSampleInstrument || !state.audioContext || !state.isPlaying) {
+      return;
+    }
+    const duration = Math.max(0.001, state.playDurationSeconds || durationSeconds());
+    const nowAbs = Math.max(0, state.audioContext.currentTime - state.playStartedAt);
+    const targetAbs = state.loopPlayback
+      ? nowAbs + LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS
+      : Math.min(duration, nowAbs + LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS);
+    const startAbs = Math.max(0, state.liveSampleScheduledUntilSec);
+    if (!forceInitial && targetAbs <= startAbs + 1e-6) {
+      return;
+    }
+
+    if (forceInitial) {
+      const initialCycle = Math.floor(startAbs / duration);
+      const initialWithin = state.loopPlayback ? startAbs - initialCycle * duration : startAbs;
+      for (const note of state.scoreEvents) {
+        const noteEnd = note.startSec + Math.max(0.02, note.durationSec);
+        if (note.startSec < initialWithin && noteEnd > initialWithin) {
+          scheduleLiveNoteEvent(
+            note,
+            state.audioContext.currentTime + 0.01,
+            Math.max(0.02, noteEnd - initialWithin)
+          );
+        }
+      }
+    }
+
+    if (state.loopPlayback) {
+      const startCycle = Math.floor(startAbs / duration);
+      const endCycle = Math.floor(Math.max(0, targetAbs - 1e-6) / duration);
+      for (let cycle = startCycle; cycle <= endCycle; cycle += 1) {
+        const cycleOffset = cycle * duration;
+        for (const note of state.scoreEvents) {
+          const eventAbs = cycleOffset + note.startSec;
+          if (eventAbs >= startAbs && eventAbs < targetAbs) {
+            scheduleLiveNoteEvent(note, state.playStartedAt + eventAbs, Math.max(0.02, note.durationSec));
+          }
+        }
+      }
+    } else {
+      for (const note of state.scoreEvents) {
+        if (note.startSec >= startAbs && note.startSec < targetAbs) {
+          scheduleLiveNoteEvent(note, state.playStartedAt + note.startSec, Math.max(0.02, note.durationSec));
+        }
+      }
+    }
+
+    state.liveSampleScheduledUntilSec = targetAbs;
+  }
+
+  async function playAudioWithProgressiveSampleNotes(audioContext) {
+    const startOffset = state.pausedOffsetSeconds >= durationSeconds() - 0.01
+      ? 0
+      : clamp(state.pausedOffsetSeconds, 0, durationSeconds());
+    const baseBuffer = await renderPreviewBaseIfNeeded("playback layers");
+    const smplr = await ensureSmplrModuleLoaded();
+    const loader = ensureSmplrSharedLoader(smplr);
+    const lookaheadScheduler = new smplr.Scheduler(audioContext, {
+      lookaheadMs: Math.ceil((LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS + 0.5) * 1000),
+      intervalMs: 120
+    });
+    const liveSampleGainNode = audioContext.createGain();
+    liveSampleGainNode.gain.value = 1;
+    liveSampleGainNode.connect(state.gainNode);
+    const instrument = createSmplrInstrumentInstance(smplr, audioContext, state.noteBackend, {
+      loader,
+      scheduler: lookaheadScheduler,
+      destination: liveSampleGainNode
+    });
+    setRenderOverlay(true, {
+      title: "Preparing playback",
+      detail: `Loading ${noteBackendName(state.noteBackend).toLowerCase()}`,
+      progress: null
+    });
+    try {
+      await instrument.load;
+    } finally {
+      setRenderOverlay(false);
+    }
+
+    stopActiveSource();
+    stopLiveSamplePlayback();
+    if (state.rafId) {
+      cancelAnimationFrame(state.rafId);
+      state.rafId = 0;
+    }
+
+    if (baseBuffer) {
+      const source = audioContext.createBufferSource();
+      source.buffer = baseBuffer;
+      source.loop = state.loopPlayback;
+      source.connect(state.gainNode);
+      source.onended = () => {
+        if (state.sourceNode === source && !state.liveSampleUsesProgressive) {
+          stopPlayback("Playback finished.");
+        }
+      };
+      state.sourceNode = source;
+      source.start(0, startOffset);
+    }
+
+    state.gainNode.gain.value = Number(gainInput.value);
+    state.liveSampleInstrument = instrument;
+    state.liveSampleScheduler = lookaheadScheduler;
+    state.liveSampleGainNode = liveSampleGainNode;
+    state.liveSampleStopFns = [];
+    state.liveSampleUsesProgressive = true;
+    state.liveSampleScheduledUntilSec = startOffset;
+    state.isPlaying = true;
+    state.isPaused = false;
+    state.playStartedAt = audioContext.currentTime - startOffset;
+    state.playDurationSeconds = durationSeconds();
+    state.playheadRatio = state.playDurationSeconds > 0 ? startOffset / state.playDurationSeconds : 0;
+    state.lastPlaybackLoopIndex = Math.floor(startOffset / Math.max(0.001, state.playDurationSeconds));
+    followPlaybackViewport({ allowBackward: true });
+    scheduleLiveSampleNotes(true);
+    setStatus(`Playing ${noteBackendName(state.noteBackend).toLowerCase()} with progressive note scheduling.`);
+    updateOutputs();
+    renderCanvas();
+    state.rafId = requestAnimationFrame(animatePlayhead);
+  }
+
   async function playAudio() {
     if (state.isPlaying && !state.isPaused) {
       return;
     }
     const audioContext = createAudioContext();
     await audioContext.resume();
+    if (sampleNoteBackendSupportsProgressivePlay()) {
+      try {
+        await playAudioWithProgressiveSampleNotes(audioContext);
+        return;
+      } catch (error) {
+        state.noteBackendWarning = `Progressive ${noteBackendName(state.noteBackend).toLowerCase()} playback fell back to offline rendering (${error && error.message ? error.message : String(error)}).`;
+        setStatus(state.noteBackendWarning);
+      }
+    }
     const buffer = await renderIfNeeded("audio");
     if (!buffer) {
       return;
@@ -6238,6 +6930,9 @@
     if (renderModeSelect) {
       state.renderMode = renderModeSelect.value || "geometry";
     }
+    if (noteBackendSelect) {
+      state.noteBackend = noteBackendSelect.value || "procedural";
+    }
     if (phaseDiagnosticsToggle) {
       state.showPhaseDiagnostics = phaseDiagnosticsToggle.checked;
     }
@@ -6482,6 +7177,19 @@
         markDirty();
         if (state.isPlaying) {
           stopPlayback(`Render mode switched to ${renderModeName(state.renderMode)}.`);
+        } else {
+          renderCanvas();
+        }
+      });
+    }
+
+    if (noteBackendSelect) {
+      noteBackendSelect.addEventListener("input", () => {
+        state.noteBackend = noteBackendSelect.value || "procedural";
+        updateOutputs();
+        markDirty();
+        if (state.isPlaying) {
+          stopPlayback(`Note backend switched to ${noteBackendName(state.noteBackend)}.`);
         } else {
           renderCanvas();
         }
