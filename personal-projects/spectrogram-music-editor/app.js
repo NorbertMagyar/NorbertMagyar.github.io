@@ -309,6 +309,7 @@
       tabs: [],
       currentTabId: null,
       activeLayerId: null,
+      hoveredRenameTarget: null,
       compositeLayerCache: null,
       scoreViewFreqs: {
         "guitar-score": defaultFrequencyRangeForView("guitar-score"),
@@ -1172,7 +1173,7 @@
     setTool(typeof settings.tool === "string" ? settings.tool : "brush");
   }
 
-  function createTabFromCurrentState(name = `Tab ${nextTabId}`) {
+  function createTabFromCurrentState(name = `Project ${nextTabId}`) {
     const layer = createEmptyLayer("Layer 1");
     layer.drawData.set(drawData);
     layer.basslineData.set(basslineData);
@@ -1187,7 +1188,7 @@
     };
   }
 
-  function createBlankTab(name = `Tab ${nextTabId}`) {
+  function createBlankTab(name = `Project-${nextTabId}`) {
     const layer = createEmptyLayer("Layer 1");
     return {
       id: `tab-${nextTabId++}`,
@@ -1361,7 +1362,16 @@
       chip.className = `tab-chip${tab.id === state.currentTabId ? " is-active" : ""}`;
       chip.setAttribute("role", "tab");
       chip.setAttribute("aria-selected", tab.id === state.currentTabId ? "true" : "false");
+      chip.title = `${tab.name} — hover and press F2 to rename`;
       chip.innerHTML = `<span class="tab-chip-label">${tab.name}</span>${state.tabs.length > 1 ? '<span class="tab-chip-close" aria-hidden="true">×</span>' : ""}`;
+      chip.addEventListener("pointerenter", () => {
+        state.hoveredRenameTarget = { type: "tab", id: tab.id };
+      });
+      chip.addEventListener("pointerleave", () => {
+        if (state.hoveredRenameTarget && state.hoveredRenameTarget.type === "tab" && state.hoveredRenameTarget.id === tab.id) {
+          state.hoveredRenameTarget = null;
+        }
+      });
       chip.addEventListener("click", (event) => {
         const closeHit = event.target instanceof HTMLElement && event.target.classList.contains("tab-chip-close");
         if (closeHit) {
@@ -1400,8 +1410,16 @@
       nameBtn.type = "button";
       nameBtn.className = "layer-name-btn";
       nameBtn.textContent = layer.name;
-      nameBtn.title = `${layer.name} — press F2 to rename`;
-      nameBtn.setAttribute("aria-label", `${layer.name}. Press F2 to rename.`);
+      nameBtn.title = `${layer.name} — hover and press F2 to rename`;
+      nameBtn.setAttribute("aria-label", `${layer.name}. Hover and press F2 to rename.`);
+      nameBtn.addEventListener("pointerenter", () => {
+        state.hoveredRenameTarget = { type: "layer", id: layer.id };
+      });
+      nameBtn.addEventListener("pointerleave", () => {
+        if (state.hoveredRenameTarget && state.hoveredRenameTarget.type === "layer" && state.hoveredRenameTarget.id === layer.id) {
+          state.hoveredRenameTarget = null;
+        }
+      });
       nameBtn.addEventListener("click", () => activateLayer(layer.id));
 
       const actions = document.createElement("div");
@@ -1544,7 +1562,7 @@
 
   function addNewTab() {
     saveCurrentTabState();
-    const tab = createBlankTab(`Tab ${state.tabs.length + 1}`);
+    const tab = createBlankTab(`Project-${state.tabs.length + 1}`);
     state.tabs.push(tab);
     switchToTab(tab.id);
   }
@@ -1598,6 +1616,49 @@
     updateWorkspaceUi();
     scheduleSessionProjectSave();
     setStatus(`Renamed layer to ${layer.name}.`);
+  }
+
+  function renameTab(tabId) {
+    const tab = state.tabs.find((entry) => entry.id === tabId);
+    if (!tab) {
+      return;
+    }
+    const nextName = window.prompt("Rename project", tab.name);
+    if (nextName == null) {
+      return;
+    }
+    const normalized = nextName.trim();
+    if (!normalized || normalized === tab.name) {
+      return;
+    }
+    tab.name = normalized;
+    updateWorkspaceUi();
+    scheduleSessionProjectSave();
+    setStatus(`Renamed project to ${tab.name}.`);
+  }
+
+  function renameHoveredTarget() {
+    const target = state.hoveredRenameTarget;
+    if (!target) {
+      return;
+    }
+    if (target.type === "layer") {
+      activateLayer(target.id);
+      renameActiveLayer();
+      return;
+    }
+    if (target.type === "tab") {
+      renameTab(target.id);
+    }
+  }
+
+  function sanitizedProjectFilename(name) {
+    const base = (name || "soundpaint")
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/[. ]+$/g, "");
+    return `${base || "soundpaint"}.soundpaint.json`;
   }
 
   function copyCurrentLayerToClipboard() {
@@ -2434,8 +2495,10 @@
 
   function saveSoundpaintProject() {
     const project = buildSoundpaintProject();
-    downloadTextFile("soundpaint.json", JSON.stringify(project, null, 2));
-    setStatus("Project saved as soundpaint.json.");
+    const activeTab = currentTabRecord();
+    const filename = sanitizedProjectFilename(activeTab ? activeTab.name : "soundpaint");
+    downloadTextFile(filename, JSON.stringify(project, null, 2));
+    setStatus(`Project saved as ${filename}.`);
   }
 
   function applySoundpaintProject(project, options = {}) {
@@ -2450,7 +2513,7 @@
           : [createEmptyLayer("Layer 1")];
         return {
           id: typeof tabPayload.id === "string" ? tabPayload.id : `tab-${nextTabId++}`,
-          name: typeof tabPayload.name === "string" ? tabPayload.name : `Tab ${index + 1}`,
+          name: typeof tabPayload.name === "string" ? tabPayload.name : `Project-${index + 1}`,
           activeLayerId: typeof tabPayload.activeLayerId === "string" ? tabPayload.activeLayerId : layers[0].id,
           settings: tabPayload.settings || buildTabSettingsFromCurrentState(),
           layers
@@ -2484,7 +2547,7 @@
     legacyLayer.scoreEvents = cloneEventList(Array.isArray(project.events?.scoreEvents) ? project.events.scoreEvents : []);
     const legacyTab = {
       id: `tab-${nextTabId++}`,
-      name: "Tab 1",
+      name: "Project-1",
       activeLayerId: legacyLayer.id,
       settings: project.settings || buildTabSettingsFromCurrentState(),
       layers: [legacyLayer]
@@ -8286,7 +8349,7 @@
           return;
         }
         event.preventDefault();
-        renameActiveLayer();
+        renameHoveredTarget();
         return;
       }
       if (event.target && /input|select|textarea|button/i.test(event.target.tagName)) {
@@ -8369,7 +8432,7 @@
     applyEditorViewSettings();
     updateOutputs();
     bindControls();
-    const initialTab = createBlankTab("Tab 1");
+    const initialTab = createBlankTab("Project-1");
     state.tabs = [initialTab];
     state.currentTabId = initialTab.id;
     bindActiveLayer(initialTab.layers[0]);

@@ -162,7 +162,13 @@
   min-width: 0;
   flex: 1 1 auto;
   overflow-x: auto;
-  scrollbar-width: thin;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.tab-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .tab-chip {
