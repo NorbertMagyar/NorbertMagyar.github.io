@@ -278,6 +278,7 @@
       playDurationSeconds: durationSeconds(),
       previewBaseBuffer: null,
       previewBaseCache: null,
+      previewBaseDirtyToken: 0,
       liveSampleInstrument: null,
       liveSampleScheduler: null,
       liveSampleGainNode: null,
@@ -2330,6 +2331,9 @@
     }
     if (resetFrequencyReference) {
       state.frequencyZoomReference = null;
+    }
+    if (full || targetLayers.includes("draw") || targetLayers.includes("bass")) {
+      state.previewBaseDirtyToken += 1;
     }
     scheduleSessionProjectSave();
   }
@@ -6604,7 +6608,8 @@
       analysis,
       tracks,
       drawSamples: drawRender.samples,
-      bassSamples: bass
+      bassSamples: bass,
+      rawMix: mixedRaw
     };
   }
 
@@ -6612,6 +6617,14 @@
     const buffer = audioContext.createBuffer(1, samples.length, RENDER_SAMPLE_RATE);
     buffer.copyToChannel(samples, 0, 0);
     return buffer;
+  }
+
+  function audioPeak(samples) {
+    let peak = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      peak = Math.max(peak, Math.abs(samples[i]));
+    }
+    return peak;
   }
 
   function hasCurrentPreviewBaseBuffer() {
@@ -6624,7 +6637,7 @@
     if (state.previewBaseCache.renderMode !== state.renderMode) {
       return false;
     }
-    if (state.dirtyRender.full || state.dirtyRender.layers.draw || state.dirtyRender.layers.bass) {
+    if (state.previewBaseCache.dirtyToken !== state.previewBaseDirtyToken) {
       return false;
     }
     return true;
@@ -6664,12 +6677,20 @@
             });
           }
         }));
+        const composite = currentRenderLayerState();
+        if (audioPeak(renderResult.samples) < 1e-6 && (layerHasEnergy(composite.drawData) || composite.bassEvents.length > 0)) {
+          throw new Error("Preview base render produced silence despite visible draw or bass layers.");
+        }
         const audioContext = createAudioContext();
         const buffer = createBufferFromSamples(audioContext, renderResult.samples);
         state.previewBaseBuffer = buffer;
         state.previewBaseCache = {
           totalSamples: renderResult.totalSamples,
-          renderMode: state.renderMode
+          renderMode: state.renderMode,
+          dirtyToken: state.previewBaseDirtyToken,
+          drawSamples: renderResult.drawSamples,
+          bassSamples: renderResult.bassSamples,
+          rawMix: renderResult.rawMix
         };
         return buffer;
       } finally {
@@ -7119,6 +7140,25 @@
     state.liveSampleScoreEvents = progressiveScoreEvents;
     state.liveSampleUsesProgressive = true;
     state.liveSampleScheduledUntilSec = startOffset;
+    if (baseBuffer) {
+      const baseSource = audioContext.createBufferSource();
+      baseSource.buffer = baseBuffer;
+      baseSource.connect(state.gainNode);
+      baseSource.onended = () => {
+        if (state.sourceNode === baseSource) {
+          try {
+            baseSource.disconnect();
+          } catch (error) {
+            // Ignore repeated disconnects after transport teardown.
+          }
+          state.sourceNode = null;
+        }
+      };
+      state.sourceNode = baseSource;
+      baseSource.start(0, clamp(startOffset, 0, baseBuffer.duration));
+    } else {
+      state.sourceNode = null;
+    }
     state.isPlaying = true;
     state.isPaused = false;
     state.playStartedAt = audioContext.currentTime - startOffset;
