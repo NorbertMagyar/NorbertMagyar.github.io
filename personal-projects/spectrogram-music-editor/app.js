@@ -1773,7 +1773,7 @@
     if (mode === "hybrid") {
       return "Hybrid coherence + Griffin-Lim";
     }
-    return "Geometry coherence";
+    return "Spectral bins";
   }
 
   function renderModeDescription(mode) {
