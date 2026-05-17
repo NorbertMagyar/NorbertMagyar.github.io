@@ -666,6 +666,7 @@ select:hover {
   right: 0;
   top: calc(100% + 0.68rem);
   width: min(24rem, 72vw);
+  max-height: min(30rem, 72vh);
   padding: 0.82rem 0.82rem 0.72rem;
   border: 1px solid rgba(111, 214, 255, 0.22);
   border-radius: 12px;
@@ -678,6 +679,7 @@ select:hover {
   opacity: 0;
   transform: translateY(-4px);
   pointer-events: none;
+  overflow-y: auto;
   transition: opacity 120ms ease, transform 120ms ease;
   z-index: 4;
 }
@@ -692,9 +694,11 @@ select:hover {
 }
 
 .toolbar-shortcuts-help:hover .help-tooltip,
-.toolbar-shortcuts-help:focus-visible .help-tooltip {
+.toolbar-shortcuts-help:focus-visible .help-tooltip,
+.toolbar-shortcuts-help:focus-within .help-tooltip {
   opacity: 1;
   transform: translateY(0);
+  pointer-events: auto;
 }
 
 .help-tooltip-row {

@@ -401,8 +401,43 @@
     return effectiveMaxFrequency();
   }
 
+  function brushRadiusPixels() {
+    return Number(sizeInput.value);
+  }
+
+  function pixelsPerVisibleCol() {
+    return plotWidth() / Math.max(1, visibleColCount() - 1);
+  }
+
+  function pixelsPerGridRow() {
+    return plotHeight() / Math.max(1, GRID_ROWS - 1);
+  }
+
   function brushRadiusCells() {
-    return (Number(sizeInput.value) / plotWidth()) * visibleColCount();
+    return brushRadiusPixels() / Math.max(1e-6, pixelsPerVisibleCol());
+  }
+
+  function brushBoundsForPoint(point, radiusPx = brushRadiusPixels()) {
+    const radiusCols = radiusPx / Math.max(1e-6, pixelsPerVisibleCol());
+    const radiusRows = radiusPx / Math.max(1e-6, pixelsPerGridRow());
+    return {
+      radiusCols,
+      radiusRows,
+      left: Math.max(0, Math.floor(point.col - radiusCols)),
+      right: Math.min(trackColCount() - 1, Math.ceil(point.col + radiusCols)),
+      top: Math.max(0, Math.floor(point.row - radiusRows)),
+      bottom: Math.min(GRID_ROWS - 1, Math.ceil(point.row + radiusRows))
+    };
+  }
+
+  function pixelDistanceBetweenGridPoints(from, to) {
+    const dxPx = (to.col - from.col) * pixelsPerVisibleCol();
+    const dyPx = (to.row - from.row) * pixelsPerGridRow();
+    return Math.hypot(dxPx, dyPx);
+  }
+
+  function interpolationStepsBetween(from, to, spacingPx = Math.max(1, brushRadiusPixels() * 0.18)) {
+    return Math.max(1, Math.ceil(pixelDistanceBetweenGridPoints(from, to) / Math.max(0.75, spacingPx)));
   }
 
   function defaultScoreNoteLengthBeats() {
@@ -2543,6 +2578,11 @@
     return `Repeat mode: count ${countLabel}, spacing ${formatScoreLengthBeats(spacing)} note. Press R to commit, Escape to cancel.`;
   }
 
+  function hasRepeatableSelection() {
+    return normalizeSelectedScoreIndices().length > 0
+      || Boolean(state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection));
+  }
+
   function resetScoreRepeatMode() {
     state.scoreRepeatMode = false;
     state.scoreRepeatCountText = "1";
@@ -2551,7 +2591,7 @@
   }
 
   function enterScoreRepeatMode() {
-    if (!normalizeSelectedScoreIndices().length) {
+    if (!hasRepeatableSelection()) {
       return false;
     }
     state.scoreRepeatMode = true;
@@ -2597,9 +2637,43 @@
     return copies;
   }
 
+  function repeatedRasterRegionsPreview(baseRegion, count, spacingBeats) {
+    if (!baseRegion) {
+      return [];
+    }
+    const patternStartSec = timeFromCol(baseRegion.bounds.startCol);
+    const patternEndSec = timeFromCol(baseRegion.bounds.endCol + 1);
+    const patternDurationSec = Math.max(1 / COLS_PER_SECOND, patternEndSec - patternStartSec);
+    const stepSec = patternDurationSec + spacingBeats * scoreBeatSeconds();
+    if (stepSec <= 0) {
+      return [];
+    }
+    const copies = [];
+    const maxCopies = count === 0 ? 2048 : count;
+    const maxCol = Math.max(0, trackColCount() - 1);
+    for (let repeatIndex = 1; repeatIndex <= maxCopies; repeatIndex += 1) {
+      const startSec = patternStartSec + repeatIndex * stepSec;
+      const startCol = colFromTime(startSec);
+      const endCol = startCol + baseRegion.width - 1;
+      if (endCol > maxCol) {
+        break;
+      }
+      copies.push({
+        startCol,
+        endCol,
+        startRow: baseRegion.bounds.startRow,
+        endRow: baseRegion.bounds.endRow
+      });
+    }
+    return copies;
+  }
+
   function commitScoreRepeatSelection() {
     const selectedNotes = selectedScoreNotes();
-    if (!selectedNotes.length) {
+    const rasterRegion = state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection)
+      ? captureRasterRegion(state.rasterSelection)
+      : null;
+    if (!selectedNotes.length && !rasterRegion) {
       resetScoreRepeatMode();
       renderCanvas();
       return false;
@@ -2609,31 +2683,59 @@
       currentScoreRepeatCount(),
       currentScoreRepeatSpacingBeats()
     );
-    if (!copies.length) {
+    const rasterCopies = repeatedRasterRegionsPreview(
+      rasterRegion,
+      currentScoreRepeatCount(),
+      currentScoreRepeatSpacingBeats()
+    );
+    if (!copies.length && !rasterCopies.length) {
       setStatus("Repeat mode produced no additional notes within the track.");
       resetScoreRepeatMode();
-      clearScoreSelection();
+      clearEditorSelection();
       renderCanvas();
       return false;
     }
     beginUndoGesture();
-    state.scoreEvents = mergeAdjacentNoteEvents([
-      ...state.scoreEvents,
-      ...copies
-    ]);
-    const span = scoreNotesSpan(copies);
-    if (span) {
+    let dirtyStartSec = Infinity;
+    let dirtyEndSec = -Infinity;
+    const dirtyLayers = new Set();
+    if (copies.length) {
+      state.scoreEvents = mergeAdjacentNoteEvents([
+        ...state.scoreEvents,
+        ...copies
+      ]);
+      const span = scoreNotesSpan(copies);
+      if (span) {
+        dirtyStartSec = Math.min(dirtyStartSec, span.startSec);
+        dirtyEndSec = Math.max(dirtyEndSec, span.endSec);
+        dirtyLayers.add("score");
+      }
+    }
+    if (rasterRegion && rasterCopies.length) {
+      for (const bounds of rasterCopies) {
+        applyRasterRegionAt(rasterRegion, bounds.startCol, bounds.startRow);
+      }
+      const firstBounds = rasterCopies[0];
+      const lastBounds = rasterCopies[rasterCopies.length - 1];
+      const dirtyRange = dirtyRangeFromColumns(firstBounds.startCol, lastBounds.endCol, 2);
+      dirtyStartSec = Math.min(dirtyStartSec, dirtyRange.startSec);
+      dirtyEndSec = Math.max(dirtyEndSec, dirtyRange.endSec);
+      dirtyLayers.add("draw");
+      dirtyLayers.add("bass");
+    }
+    if (dirtyLayers.size) {
       markDirty({
         full: false,
-        layers: ["score"],
-        rangeStartSec: span.startSec,
-        rangeEndSec: span.endSec
+        layers: Array.from(dirtyLayers),
+        rangeStartSec: dirtyStartSec,
+        rangeEndSec: dirtyEndSec
       });
     }
     commitUndoGesture();
     resetScoreRepeatMode();
-    clearScoreSelection();
-    setStatus(`Repeated selection ${copies.length / Math.max(1, selectedNotes.length)} time${copies.length === selectedNotes.length ? "" : "s"}.`);
+    clearEditorSelection();
+    const repeatedUnits = currentScoreRepeatCount() === 0 ? "to the end of the track" : `${Math.max(copies.length ? copies.length / Math.max(1, selectedNotes.length) : 0, rasterCopies.length)} time${Math.max(copies.length ? copies.length / Math.max(1, selectedNotes.length) : 0, rasterCopies.length) === 1 ? "" : "s"}`;
+    setStatus(`Repeated selection ${repeatedUnits}.`);
     renderCanvas();
     return true;
   }
@@ -4233,7 +4335,15 @@
       currentScoreRepeatCount(),
       currentScoreRepeatSpacingBeats()
     );
-    if (!previewNotes.length || !isScoreSheetMode()) {
+    const rasterRegion = state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection)
+      ? captureRasterRegion(state.rasterSelection)
+      : null;
+    const rasterCopies = repeatedRasterRegionsPreview(
+      rasterRegion,
+      currentScoreRepeatCount(),
+      currentScoreRepeatSpacingBeats()
+    );
+    if ((!previewNotes.length && !rasterCopies.length) || !isScoreSheetMode()) {
       return;
     }
     const x0 = margins.left;
@@ -4265,6 +4375,19 @@
       ctx.lineWidth = 1.15;
       ctx.fillRect(x1, rectY, width, rectHeight);
       ctx.strokeRect(x1 + 0.5, rectY + 0.5, Math.max(1, width - 1), Math.max(1, rectHeight - 1));
+    }
+    for (const bounds of rasterCopies) {
+      const topLeft = gridToCanvas(bounds.startCol, bounds.startRow);
+      const bottomRight = gridToCanvas(bounds.endCol + 1, bounds.endRow + 1);
+      const rectX = Math.min(topLeft.x, bottomRight.x);
+      const rectY = Math.min(topLeft.y, bottomRight.y);
+      const rectWidth = Math.max(2, Math.abs(bottomRight.x - topLeft.x));
+      const rectHeight = Math.max(2, Math.abs(bottomRight.y - topLeft.y));
+      ctx.fillStyle = "rgba(160, 236, 255, 0.08)";
+      ctx.strokeStyle = "rgba(160, 236, 255, 0.6)";
+      ctx.lineWidth = 1.1;
+      ctx.fillRect(rectX, rectY, rectWidth, rectHeight);
+      ctx.strokeRect(rectX + 0.5, rectY + 0.5, Math.max(1, rectWidth - 1), Math.max(1, rectHeight - 1));
     }
     ctx.restore();
   }
@@ -4343,7 +4466,7 @@
       return;
     }
     const point = gridToCanvas(state.currentPointer.col, state.currentPointer.row);
-    const radius = (brushRadiusCells() / Math.max(1, visibleColCount())) * plotWidth();
+    const radius = brushRadiusPixels();
     ctx.save();
     ctx.strokeStyle = "rgba(255,255,255,0.7)";
     ctx.lineWidth = 1.5;
@@ -4527,40 +4650,38 @@
   }
 
   function stampBrush(point, amount, exponent, layer = drawData) {
-    const radius = brushRadiusCells();
-    const left = Math.max(0, Math.floor(point.col - radius));
-    const right = Math.min(trackColCount() - 1, Math.ceil(point.col + radius));
-    const top = Math.max(0, Math.floor(point.row - radius));
-    const bottom = Math.min(GRID_ROWS - 1, Math.ceil(point.row + radius));
+    const radiusPx = brushRadiusPixels();
+    const { left, right, top, bottom } = brushBoundsForPoint(point, radiusPx);
+    const colScale = pixelsPerVisibleCol();
+    const rowScale = pixelsPerGridRow();
 
     for (let row = top; row <= bottom; row += 1) {
       for (let col = left; col <= right; col += 1) {
-        const dx = (col - point.col) / radius;
-        const dy = (row - point.row) / radius;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > 1) {
+        const dxPx = (col - point.col) * colScale;
+        const dyPx = (row - point.row) * rowScale;
+        const distPx = Math.hypot(dxPx, dyPx);
+        if (distPx > radiusPx) {
           continue;
         }
-        const falloff = Math.pow(1 - dist, exponent);
+        const falloff = Math.pow(1 - distPx / Math.max(1e-6, radiusPx), exponent);
         setAmplitude(layer, col, row, amount * falloff);
       }
     }
   }
 
   function stampGaussian(point, amount, widthScale, layer = drawData) {
-    const sigma = Math.max(1.2, brushRadiusCells() * widthScale);
-    const radius = sigma * 2.8;
-    const left = Math.max(0, Math.floor(point.col - radius));
-    const right = Math.min(trackColCount() - 1, Math.ceil(point.col + radius));
-    const top = Math.max(0, Math.floor(point.row - radius));
-    const bottom = Math.min(GRID_ROWS - 1, Math.ceil(point.row + radius));
+    const sigmaPx = Math.max(1.2, brushRadiusPixels() * widthScale);
+    const radiusPx = sigmaPx * 2.8;
+    const { left, right, top, bottom } = brushBoundsForPoint(point, radiusPx);
+    const colScale = pixelsPerVisibleCol();
+    const rowScale = pixelsPerGridRow();
 
     for (let row = top; row <= bottom; row += 1) {
       for (let col = left; col <= right; col += 1) {
-        const dx = col - point.col;
-        const dy = row - point.row;
-        const distSq = dx * dx + dy * dy;
-        const delta = amount * Math.exp(-distSq / (2 * sigma * sigma));
+        const dxPx = (col - point.col) * colScale;
+        const dyPx = (row - point.row) * rowScale;
+        const distSqPx = dxPx * dxPx + dyPx * dyPx;
+        const delta = amount * Math.exp(-distSqPx / (2 * sigmaPx * sigmaPx));
         if (delta > 0.0004) {
           setAmplitude(layer, col, row, delta);
         }
@@ -4569,23 +4690,23 @@
   }
 
   function stampSpray(point, dtMs, direction, layer = drawData) {
-    const radius = brushRadiusCells();
+    const radiusPx = brushRadiusPixels();
+    const colScale = pixelsPerVisibleCol();
+    const rowScale = pixelsPerGridRow();
     const particles = Math.max(2, Math.round(currentDensity() * (dtMs / 16)));
     const strength = currentStrength() * 0.14 * direction;
 
     for (let i = 0; i < particles; i += 1) {
       const angle = Math.random() * TAU;
-      const distance = Math.sqrt(Math.random()) * radius;
-      const col = Math.round(point.col + Math.cos(angle) * distance);
-      const row = Math.round(point.row + Math.sin(angle) * distance);
+      const distancePx = Math.sqrt(Math.random()) * radiusPx;
+      const col = Math.round(point.col + (Math.cos(angle) * distancePx) / Math.max(1e-6, colScale));
+      const row = Math.round(point.row + (Math.sin(angle) * distancePx) / Math.max(1e-6, rowScale));
       setAmplitude(layer, col, row, strength * (0.55 + Math.random() * 0.45));
     }
   }
 
   function stampLine(from, to, direction, layer = drawData) {
-    const dx = to.col - from.col;
-    const dy = to.row - from.row;
-    const steps = Math.max(Math.abs(dx), Math.abs(dy), 1);
+    const steps = interpolationStepsBetween(from, to, Math.max(1, brushRadiusPixels() * 0.18));
     const amount = currentStrength() * 0.18 * direction;
     for (let i = 0; i <= steps; i += 1) {
       const t = i / steps;
@@ -4598,10 +4719,8 @@
   }
 
   function hasLayerContentNearPoint(layer, point, radiusCols = brushRadiusCells()) {
-    const left = Math.max(0, Math.floor(point.col - radiusCols));
-    const right = Math.min(trackColCount() - 1, Math.ceil(point.col + radiusCols));
-    const top = Math.max(0, Math.floor(point.row - radiusCols));
-    const bottom = Math.min(GRID_ROWS - 1, Math.ceil(point.row + radiusCols));
+    const radiusPx = radiusCols * pixelsPerVisibleCol();
+    const { left, right, top, bottom } = brushBoundsForPoint(point, radiusPx);
     for (let row = top; row <= bottom; row += 1) {
       for (let col = left; col <= right; col += 1) {
         if (amplitudeAt(layer, col, row) > EPSILON) {
@@ -4895,9 +5014,7 @@
   }
 
   function paintSegment(from, to, dtMs) {
-    const dx = to.col - from.col;
-    const dy = to.row - from.row;
-    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy))));
+    const steps = interpolationStepsBetween(from, to, Math.max(1, brushRadiusPixels() * 0.16));
     const dirtyLayers = { draw: false, bass: false, score: false };
     for (let i = 0; i <= steps; i += 1) {
       const t = i / steps;
@@ -8450,7 +8567,7 @@
     if ((tool === "note" || tool === "select") && !isScoreNoteToolAvailable()) {
       tool = "pointer";
     }
-    if (tool !== "select" && state.scoreRepeatMode) {
+    if (!["note", "select"].includes(tool) && state.scoreRepeatMode) {
       resetScoreRepeatMode();
     }
     state.tool = tool;
@@ -9786,7 +9903,7 @@
       return;
     }
     event.preventDefault();
-    if (state.scoreRepeatMode && state.tool === "select" && normalizeSelectedScoreIndices().length) {
+    if (state.scoreRepeatMode && ["note", "select"].includes(state.tool) && hasRepeatableSelection()) {
       const spacing = stepScoreRepeatSpacing(event.deltaY < 0 ? -1 : 1);
       setStatus(scoreRepeatStatusText());
       renderCanvas();
@@ -10413,9 +10530,13 @@
       }
 
       if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "r") {
-        if (state.tool === "select" && normalizeSelectedScoreIndices().length) {
+        if (["note", "select"].includes(state.tool) && hasRepeatableSelection()) {
           event.preventDefault();
-          enterScoreRepeatMode();
+          if (state.scoreRepeatMode) {
+            commitScoreRepeatSelection();
+          } else {
+            enterScoreRepeatMode();
+          }
         }
         return;
       }
