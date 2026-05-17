@@ -119,6 +119,8 @@
     const presetSelect = document.getElementById("preset-select");
     const scorePresetButton = document.getElementById("score-preset-btn");
     const scorePresetSelect = document.getElementById("score-preset-select");
+    const bassPresetButton = document.getElementById("bass-preset-btn");
+    const bassPresetSelect = document.getElementById("bass-preset-select");
     const scoreImportButton = document.getElementById("score-import-btn");
     const scoreImportInput = document.getElementById("score-import-input");
     const basslineButton = document.getElementById("bassline-btn");
@@ -203,7 +205,7 @@
     let scoreEventsRef = [];
     let nextTabId = 1;
     let nextLayerId = 1;
-    const margins = { left: 74, right: 28, top: 26, bottom: 54 };
+    const margins = { left: 150, right: 28, top: 26, bottom: 54 };
     const SCORE_VIEW_PROFILES = {
       "guitar-score": {
         label: "guitar score sheet",
@@ -1051,6 +1053,18 @@
     }
     if (name === "electro-break") {
       return 132;
+    }
+    if (name === "psy-offbeat") {
+      return 145;
+    }
+    if (name === "dubstep-triplet") {
+      return 140;
+    }
+    if (name === "trap-glide") {
+      return 150;
+    }
+    if (name === "garage-bounce") {
+      return 134;
     }
     return 120;
   }
@@ -3200,7 +3214,7 @@
     }
 
     ctx.save();
-    ctx.translate(18, y0 + h / 2);
+    ctx.translate(0, y0 + h / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
@@ -3210,7 +3224,7 @@
 
     ctx.textAlign = "center";
     ctx.font = "700 16px Inter, system-ui, sans-serif";
-    ctx.fillText("Time", x0 + w / 2, canvas.height - 22);
+    ctx.fillText("Time", x0 + w / 2, canvas.height - 12);
     ctx.restore();
   }
 
@@ -3325,6 +3339,55 @@
       ctx.fillStyle = `rgba(${Math.round(96 + velocity * 58)}, ${Math.round(182 + velocity * 24)}, 255, 0.34)`;
       ctx.strokeStyle = `rgba(${Math.round(214 + velocity * 20)}, ${Math.round(236 + velocity * 12)}, 255, 0.84)`;
       ctx.lineWidth = 1.1;
+      ctx.fillRect(x1, rectY, width, rectHeight);
+      ctx.strokeRect(x1 + 0.5, rectY + 0.5, Math.max(1, width - 1), Math.max(1, rectHeight - 1));
+    }
+
+    ctx.restore();
+  }
+
+  function drawBassEventOverlay() {
+    const bassNoteEvents = currentRenderLayerState().bassEvents.filter((event) => event.type === "bass");
+    if (!bassNoteEvents.length) {
+      return;
+    }
+
+    const startVisibleCol = visibleStartCol();
+    const endVisibleCol = visibleEndCol();
+    const y0 = margins.top;
+    const h = plotHeight();
+
+    ctx.save();
+    ctx.rect(margins.left, y0, plotWidth(), h);
+    ctx.clip();
+
+    for (const event of bassNoteEvents) {
+      const startCol = colFromTime(event.time);
+      const endCol = Math.max(startCol + 1, colFromTime(event.time + Math.max(0.02, event.duration || 0.02)));
+      if (endCol < startVisibleCol || startCol > endVisibleCol) {
+        continue;
+      }
+
+      const clampedStart = Math.max(startVisibleCol, startCol);
+      const clampedEnd = Math.min(endVisibleCol, endCol);
+      const x1 = margins.left + ((clampedStart - startVisibleCol) / Math.max(1, visibleColCount() - 1)) * plotWidth();
+      const x2 = margins.left + ((clampedEnd - startVisibleCol) / Math.max(1, visibleColCount() - 1)) * plotWidth();
+      const width = Math.max(2, x2 - x1);
+
+      const centerFreq = Math.max(30, event.endFreq || event.startFreq || 55);
+      const topFreq = centerFreq * Math.pow(2, 0.48 / 12);
+      const bottomFreq = centerFreq * Math.pow(2, -0.48 / 12);
+      const topRow = rowFromFreq(topFreq);
+      const bottomRow = rowFromFreq(bottomFreq);
+      const topY = y0 + (Math.min(topRow, bottomRow) / (GRID_ROWS - 1)) * h;
+      const bottomY = y0 + (Math.max(topRow, bottomRow) / (GRID_ROWS - 1)) * h;
+      const rectHeight = Math.max(5, bottomY - topY);
+      const rectY = (topY + bottomY) * 0.5 - rectHeight * 0.5;
+      const gain = clamp(event.gain || 0.85, 0.2, 1.2);
+
+      ctx.fillStyle = `rgba(${Math.round(255)}, ${Math.round(188 + gain * 22)}, ${Math.round(92 + gain * 18)}, 0.28)`;
+      ctx.strokeStyle = `rgba(${Math.round(255)}, ${Math.round(218 + gain * 12)}, ${Math.round(142 + gain * 10)}, 0.88)`;
+      ctx.lineWidth = 1.05;
       ctx.fillRect(x1, rectY, width, rectHeight);
       ctx.strokeRect(x1 + 0.5, rectY + 0.5, Math.max(1, width - 1), Math.max(1, rectHeight - 1));
     }
@@ -3463,6 +3526,7 @@
     ctx.restore();
 
     drawGridAndAxes();
+    drawBassEventOverlay();
     drawImportedScoreOverlay();
     drawPhaseDiagnosticsOverlay(diagnostics);
     drawPlayhead();
@@ -7602,6 +7666,95 @@
     importParsedScore(parsedScore);
   }
 
+  function importParsedBassPattern(parsedScore, label = parsedScore.format || "bass pattern") {
+    if (!parsedScore.notes.length) {
+      throw new Error("No playable bass notes were found in the bundled import.");
+    }
+    const patternNotes = mergeAdjacentNoteEvents(parsedScore.notes)
+      .filter((note) => note.midi <= 72)
+      .sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
+    if (!patternNotes.length) {
+      throw new Error("Bundled bass import does not contain notes in a usable bass range.");
+    }
+    const patternStartSec = firstNoteStartSec(patternNotes) || 0;
+    const normalizedNotes = patternNotes.map((note) => ({
+      ...note,
+      startSec: Math.max(0, note.startSec - patternStartSec)
+    }));
+    const patternDurationSec = Math.max(
+      0.25,
+      normalizedNotes.reduce((max, note) => Math.max(max, note.startSec + note.durationSec), 0)
+    );
+    const totalDuration = durationSeconds();
+
+    basslineData.fill(0);
+    bassEvents.length = 0;
+
+    function pushBassEvent(note, offsetSec) {
+      const startSec = offsetSec + note.startSec;
+      if (startSec >= totalDuration) {
+        return;
+      }
+      const clampedDuration = Math.min(note.durationSec, totalDuration - startSec);
+      if (clampedDuration <= 0.01) {
+        return;
+      }
+      const freq = midiToFreq(note.midi);
+      const startCol = colFromTime(startSec);
+      const endCol = colFromTime(Math.min(totalDuration, startSec + clampedDuration));
+      stampLine(
+        { col: startCol, row: rowFromFreq(freq) },
+        { col: endCol, row: rowFromFreq(freq) },
+        1,
+        basslineData
+      );
+      bassEvents.push({
+        type: "bass",
+        time: startSec,
+        duration: Math.max(0.02, clampedDuration),
+        startFreq: Math.max(30, freq),
+        endFreq: Math.max(30, freq),
+        gain: clamp(0.45 + (note.velocity || 0.75) * 0.55, 0.3, 1)
+      });
+    }
+
+    for (let offsetSec = 0; offsetSec < totalDuration - 1e-6; offsetSec += patternDurationSec) {
+      for (const note of normalizedNotes) {
+        pushBassEvent(note, offsetSec);
+      }
+    }
+
+    state.currentBasslinePreset = "custom";
+    resetUndoHistory();
+    markDirty();
+    stopPlayback(`Bundled bass import "${label}" loaded.`);
+    renderCanvas();
+  }
+
+  async function importBundledBassPreset(assetPath) {
+    if (!assetPath) {
+      return;
+    }
+    if (assetPath.startsWith("builtin:")) {
+      const presetName = assetPath.slice("builtin:".length);
+      applyBassLinePreset(presetName);
+      return;
+    }
+    const fileName = decodeURIComponent(assetPath.split("/").pop() || assetPath);
+    const response = await fetch(assetPath, { cache: "force-cache" });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch bundled bass import "${fileName}" (${response.status}).`);
+    }
+    const lowerName = fileName.toLowerCase();
+    let parsedScore;
+    if (lowerName.endsWith(".mid") || lowerName.endsWith(".midi")) {
+      parsedScore = parseMidiScore(await response.arrayBuffer());
+    } else {
+      parsedScore = parseMusicXmlScore(await response.text());
+    }
+    importParsedBassPattern(parsedScore, fileName.replace(/\.(mid|midi|musicxml|xml)$/i, ""));
+  }
+
   function applyPreset(name) {
     drawData.fill(0);
     clearImportedScoreEvents();
@@ -7874,6 +8027,74 @@
             );
           }
         }
+      });
+    } else if (name === "psy-offbeat") {
+      repeatBars(({ phraseStart, secondsPerBeat }) => {
+        kick(phraseStart + secondsPerBeat * 0.04, 47, secondsPerBeat);
+        kick(phraseStart + secondsPerBeat * 2.04, 47, secondsPerBeat);
+        snare(phraseStart + secondsPerBeat * 1.52);
+        snare(phraseStart + secondsPerBeat * 3.52);
+        for (let beat = 0; beat < 4; beat += 1) {
+          hat(phraseStart + beat * secondsPerBeat + secondsPerBeat * 0.74);
+          bassNote(
+            phraseStart + beat * secondsPerBeat + secondsPerBeat * 0.54,
+            phraseStart + (beat + 1) * secondsPerBeat - secondsPerBeat * 0.08,
+            beat < 2 ? 49 : 55,
+            beat < 2 ? 61.74 : 69.3,
+            0.98
+          );
+        }
+      });
+    } else if (name === "dubstep-triplet") {
+      repeatBars(({ phraseStart, phraseIndex, phraseDuration, secondsPerBeat }) => {
+        const start = phraseStart;
+        kick(start + phraseDuration * 0.03, 44, secondsPerBeat);
+        snare(start + phraseDuration * 0.51);
+        hat(start + phraseDuration * 0.24);
+        hat(start + phraseDuration * 0.74);
+        const root = phraseIndex % 2 === 0 ? 46.25 : 43.65;
+        bassNote(start + phraseDuration * 0.06, start + phraseDuration * 0.18, root, root * 1.3, 1.02);
+        bassNote(start + phraseDuration * 0.2, start + phraseDuration * 0.3, root * 1.5, root * 1.95, 0.8);
+        bassNote(start + phraseDuration * 0.34, start + phraseDuration * 0.5, root * 1.125, root * 1.55, 0.88);
+        bassNote(start + phraseDuration * 0.56, start + phraseDuration * 0.7, root, root * 1.42, 0.96);
+        bassNote(start + phraseDuration * 0.72, start + phraseDuration * 0.94, phraseIndex % 2 === 0 ? 61.74 : 55, 77.78, 1.08);
+      }, 2);
+    } else if (name === "trap-glide") {
+      repeatBars(({ phraseStart, phraseIndex, barDuration, secondsPerBeat }) => {
+        kick(phraseStart + secondsPerBeat * 0.06, 42, secondsPerBeat);
+        kick(phraseStart + secondsPerBeat * 1.65, 42, secondsPerBeat);
+        kick(phraseStart + secondsPerBeat * 2.72, 42, secondsPerBeat);
+        snare(phraseStart + secondsPerBeat * 1.48);
+        snare(phraseStart + secondsPerBeat * 3.48);
+        for (let step = 0; step < 8; step += 1) {
+          if (step % 2 === 1) {
+            hat(phraseStart + step * (barDuration / 8) + barDuration / 16);
+          }
+        }
+        bassNote(phraseStart + barDuration * 0.04, phraseStart + barDuration * 0.26, 43.65, 58.27, 1.08);
+        bassNote(phraseStart + barDuration * 0.38, phraseStart + barDuration * 0.54, 43.65, 43.65, 0.82);
+        bassNote(
+          phraseStart + barDuration * 0.6,
+          phraseStart + barDuration * 0.9,
+          phraseIndex % 2 === 0 ? 32.7 : 36.71,
+          phraseIndex % 2 === 0 ? 65.41 : 73.42,
+          1.12
+        );
+      });
+    } else if (name === "garage-bounce") {
+      repeatBars(({ phraseStart, barDuration, secondsPerBeat }) => {
+        kick(phraseStart + secondsPerBeat * 0.1, 48, secondsPerBeat);
+        kick(phraseStart + secondsPerBeat * 2.58, 48, secondsPerBeat);
+        snare(phraseStart + secondsPerBeat * 1.44);
+        snare(phraseStart + secondsPerBeat * 3.42);
+        hat(phraseStart + secondsPerBeat * 0.62);
+        hat(phraseStart + secondsPerBeat * 1.14);
+        hat(phraseStart + secondsPerBeat * 2.14);
+        hat(phraseStart + secondsPerBeat * 3.14);
+        bassNote(phraseStart + barDuration * 0.08, phraseStart + barDuration * 0.18, 55, 65.41, 0.88);
+        bassNote(phraseStart + barDuration * 0.24, phraseStart + barDuration * 0.34, 73.42, 92.5, 0.78);
+        bassNote(phraseStart + barDuration * 0.42, phraseStart + barDuration * 0.58, 65.41, 77.78, 0.92);
+        bassNote(phraseStart + barDuration * 0.68, phraseStart + barDuration * 0.92, 82.41, 98, 1.02);
       });
     }
 
@@ -8357,6 +8578,24 @@
       });
     }
 
+    if (bassPresetButton && bassPresetSelect) {
+      bassPresetButton.addEventListener("click", async () => {
+        const assetPath = bassPresetSelect.value;
+        if (!assetPath) {
+          return;
+        }
+        closeMenuForElement(bassPresetButton);
+        try {
+          const presetName = decodeURIComponent(assetPath.split("/").pop() || assetPath);
+          setStatus(`Loading bundled bass import ${presetName}...`);
+          await importBundledBassPreset(assetPath);
+        } catch (error) {
+          reportBootError(error);
+          setStatus(`Bundled bass import failed: ${error.message || String(error)}`);
+        }
+      });
+    }
+
     if (projectSaveButton) {
       projectSaveButton.addEventListener("click", () => {
         saveSoundpaintProject();
@@ -8537,7 +8776,9 @@
     }
     clearButton.addEventListener("click", clearSpectrogram);
     presetButton.addEventListener("click", () => applyPreset(presetSelect.value));
-    basslineButton.addEventListener("click", () => applyBassLinePreset(basslineSelect.value));
+    if (basslineButton && basslineSelect) {
+      basslineButton.addEventListener("click", () => applyBassLinePreset(basslineSelect.value));
+    }
     clearBasslineButton.addEventListener("click", clearBassLine);
     if (toolSettingsButton) {
       toolSettingsButton.addEventListener("click", (event) => {

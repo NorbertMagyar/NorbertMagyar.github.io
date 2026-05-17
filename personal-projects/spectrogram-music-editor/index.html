@@ -233,6 +233,23 @@
                         <button id="score-preset-btn" type="button" class="action-btn menu-action-btn">Load</button>
                       </div>
                     </label>
+                    <label class="control-stack">
+                      <span>Load bundled bass import</span>
+                      <div class="inline-row">
+                        <select id="bass-preset-select">
+                          <option value="assets/bass-presets/Walkingbass%20twelve-bar%20blues%20variation.mid">Walking bass twelve-bar blues</option>
+                          <option value="assets/bass-presets/Texas%20%26%20Pacific%20boogie%20woogie%20bass.mid">Texas &amp; Pacific boogie woogie bass</option>
+                          <option value="assets/bass-presets/Blues%20mi%20harmonie%20elementaire.midi">Blues in E walking bass</option>
+                          <option value="assets/bass-presets/Didos%20Lament%20ground%20bass.mid">Dido's Lament ground bass</option>
+                          <option value="assets/bass-presets/Bachs%20Crucifixus%20ground%20bass.mid">Bach Crucifixus ground bass</option>
+                          <option value="builtin:psy-offbeat">Psy offbeat sub</option>
+                          <option value="builtin:dubstep-triplet">Dubstep triplet wobble</option>
+                          <option value="builtin:trap-glide">Trap glide 808</option>
+                          <option value="builtin:garage-bounce">Garage bounce bass</option>
+                        </select>
+                        <button id="bass-preset-btn" type="button" class="action-btn menu-action-btn">Load</button>
+                      </div>
+                    </label>
                   </div>
                 </details>
 
@@ -301,24 +318,11 @@
                   <summary class="menu-trigger">Bass Line</summary>
                   <div class="menu-panel" role="group" aria-label="Bass line menu">
                     <label class="control-stack">
-                      <span>Load bass-line backing</span>
-                      <div class="inline-row">
-                        <select id="bassline-select">
-                          <option value="none">Empty bass line</option>
-                          <option value="dub-foundation">Dub foundation</option>
-                          <option value="four-floor">Four on the floor</option>
-                          <option value="halfstep-wobble">Half-step wobble</option>
-                          <option value="electro-break">Electro break</option>
-                        </select>
-                        <button id="bassline-btn" type="button" class="action-btn menu-action-btn">Load</button>
-                      </div>
-                    </label>
-                    <label class="control-stack">
                       <span>Bass-line BPM: <output id="bassline-bpm-out">120</output></span>
                       <input id="bassline-bpm-input" type="range" min="80" max="300" step="1" value="120" />
                     </label>
                     <button id="clear-bassline-btn" type="button" class="action-btn menu-action-btn">Clear Bass Line</button>
-                    <p class="card-note">These presets include bass movement plus kick, snare, and hat-like transients. In score-sheet mode, this BPM also sets the note-grid quantization used by the Note tool.</p>
+                    <p class="card-note">Bundled bass imports now live under Preset. This BPM remains available for future manual bass-line creation and for note-grid quantization in score-sheet mode.</p>
                   </div>
                 </details>
               </div>
