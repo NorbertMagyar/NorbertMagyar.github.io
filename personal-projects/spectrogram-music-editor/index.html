@@ -309,7 +309,13 @@
               </div>
               <div class="surface-toolbar">
                 <div class="button-row tool-row" role="toolbar" aria-label="Tool selection">
-                  <button type="button" class="tool-btn is-active" data-tool="brush">
+                  <button type="button" class="tool-btn is-active" data-tool="pointer">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M7 4.5v13l3.7-3.7 2.1 5.2 2.2-.9-2.1-5.2H18z"/></svg>
+                    </span>
+                    <span>Pointer</span>
+                  </button>
+                  <button type="button" class="tool-btn" data-tool="brush">
                     <span class="tool-icon" aria-hidden="true">
                       <svg viewBox="0 0 24 24"><path d="M6 18l7-7m-4 10c-2.2 0-3.5-.7-4.3-1.7-.7-.9-.8-2.2-.1-3l8.9-8.9a2.5 2.5 0 013.5 0l.7.7a2.5 2.5 0 010 3.5L9 20.3"/></svg>
                     </span>
@@ -402,6 +408,7 @@
                     <span class="help-badge" aria-hidden="true">?</span>
                     <span class="toolbar-help-text">Shortcuts</span>
                     <span class="help-tooltip" role="tooltip">
+                      <span class="help-tooltip-row"><strong>V</strong> Select the Pointer tool for time positioning</span>
                       <span class="help-tooltip-row"><strong>1-5</strong> Select Brush, Spray, Gaussian, Line, or Erase</span>
                       <span class="help-tooltip-row"><strong>6</strong> Select the Note tool in guitar or piano score-sheet view</span>
                       <span class="help-tooltip-row"><strong>[</strong> or <strong>]</strong> Change brush size</span>

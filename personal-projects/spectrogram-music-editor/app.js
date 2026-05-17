@@ -224,7 +224,7 @@
     };
 
     const state = {
-      tool: "brush",
+      tool: "pointer",
       pointerInside: false,
       drawing: false,
       lastPointer: null,
@@ -518,7 +518,7 @@
   }
 
   function updateToolParameterVisibility() {
-    const showSize = state.tool !== "note";
+    const showSize = state.tool !== "note" && state.tool !== "pointer";
     const showStrength = ["brush", "spray", "gaussian", "erase"].includes(state.tool);
     const showDensity = state.tool === "spray";
     const showAny = showSize || showStrength || showDensity;
@@ -1176,7 +1176,7 @@
     clampViewSpan();
     clampViewOffset();
     state.frequencyZoomReference = null;
-    setTool(typeof settings.tool === "string" ? settings.tool : "brush");
+    setTool(typeof settings.tool === "string" ? settings.tool : "pointer");
   }
 
   function createTabFromCurrentState(name = `Project ${nextTabId}`) {
@@ -1830,6 +1830,16 @@
     return true;
   }
 
+  function transportIsActive() {
+    return state.transportPending === "play"
+      || (state.isPlaying && !state.isPaused)
+      || Boolean(state.sourceNode)
+      || state.liveSampleUsesProgressive
+      || Boolean(state.liveSampleInstrument)
+      || Boolean(state.liveSampleGainNode)
+      || Boolean(state.rafId);
+  }
+
   function setSampleDebug(message) {
     if (sampleDebugText) {
       sampleDebugText.textContent = `Sample debug: ${message}`;
@@ -2015,7 +2025,10 @@
     if (state.renderedBuffer) {
       return state.renderedBuffer.duration;
     }
-    return state.playDurationSeconds || durationSeconds();
+    if (state.isPlaying || state.isPaused) {
+      return state.playDurationSeconds || durationSeconds();
+    }
+    return durationSeconds();
   }
 
   function setPlayheadRatio(ratio) {
@@ -2025,6 +2038,25 @@
 
   function setPlayheadFromColumn(col) {
     setPlayheadRatio(col / Math.max(1, trackColCount() - 1));
+  }
+
+  function preferredPlaybackStartOffset(duration) {
+    const safeDuration = Math.max(0, duration || 0);
+    if (safeDuration <= 0.01) {
+      return 0;
+    }
+    if (state.pausedOffsetSeconds > 0 && state.pausedOffsetSeconds < safeDuration - 0.01) {
+      return clamp(state.pausedOffsetSeconds, 0, safeDuration);
+    }
+    if (state.playheadRatio > 0) {
+      return clamp(state.playheadRatio * safeDuration, 0, safeDuration);
+    }
+    return 0;
+  }
+
+  function timelinePositionStatus() {
+    const prefix = state.isPaused ? "Paused" : "Current time";
+    return `${prefix} at ${state.pausedOffsetSeconds.toFixed(2)} s. Drag the playhead to shift the current time slice.`;
   }
 
   function setViewWindow(nextOffset, nextSpan, options = {}) {
@@ -2096,6 +2128,9 @@
   }
 
   function defaultCanvasCursor() {
+    if (state.tool === "pointer") {
+      return "ew-resize";
+    }
     return state.tool === "line" || state.tool === "note" ? "cell" : "crosshair";
   }
 
@@ -2757,7 +2792,7 @@
       surfaceToolbar.classList.toggle("is-collapsed", !state.showDrawingTools);
     }
     if (playButton) {
-      const playActsAsPause = state.transportPending === "play" || (state.isPlaying && !state.isPaused);
+      const playActsAsPause = transportIsActive();
       playButton.classList.toggle("is-engaged", playActsAsPause);
       playButton.setAttribute("aria-label", playActsAsPause ? "Pause" : "Play");
       playButton.title = playActsAsPause ? "Pause" : "Play";
@@ -3296,7 +3331,7 @@
   }
 
   function drawPointerPreview() {
-    if (!state.pointerInside || !state.currentPointer || state.tool === "line" || state.tool === "note") {
+    if (!state.pointerInside || !state.currentPointer || state.tool === "line" || state.tool === "note" || state.tool === "pointer") {
       return;
     }
     const point = gridToCanvas(state.currentPointer.col, state.currentPointer.row);
@@ -3771,23 +3806,41 @@
   }
 
   function pausePlayback() {
-    if (state.transportPending === "play" && !state.isPlaying) {
+    const pendingStart = state.transportPending === "play";
+    const hasLiveTransport = Boolean(state.sourceNode)
+      || state.liveSampleUsesProgressive
+      || Boolean(state.liveSampleInstrument)
+      || Boolean(state.liveSampleGainNode)
+      || Boolean(state.rafId);
+    if (pendingStart && !state.isPlaying && !hasLiveTransport) {
       cancelPendingTransport("Playback start canceled.");
       renderCanvas();
       return;
     }
-    const playbackDuration = Math.max(0, state.playDurationSeconds || (state.renderedBuffer ? state.renderedBuffer.duration : 0));
-    if (!state.isPlaying || !state.audioContext || playbackDuration <= 0) {
+    const playbackDuration = Math.max(
+      0,
+      state.playDurationSeconds
+        || (state.renderedBuffer ? state.renderedBuffer.duration : 0)
+        || durationSeconds()
+    );
+    if (!pendingStart && !state.isPlaying && !hasLiveTransport) {
       return;
     }
-    let offset = clamp(
-      state.audioContext.currentTime - state.playStartedAt,
-      0,
-      playbackDuration
-    );
-    if (state.loopPlayback && playbackDuration > 0) {
-      offset = ((offset % playbackDuration) + playbackDuration) % playbackDuration;
+    let offset = clamp(state.pausedOffsetSeconds, 0, playbackDuration);
+    if (state.audioContext && playbackDuration > 0) {
+      const currentOffset = clamp(
+        state.audioContext.currentTime - state.playStartedAt,
+        0,
+        playbackDuration
+      );
+      offset = currentOffset;
+      if (state.loopPlayback) {
+        offset = ((currentOffset % playbackDuration) + playbackDuration) % playbackDuration;
+      }
+    } else if (playbackDuration > 0) {
+      offset = clamp(state.playheadRatio * playbackDuration, 0, playbackDuration);
     }
+    cancelPendingTransport();
     stopActiveSource();
     stopLiveSamplePlayback();
     state.isPlaying = false;
@@ -6936,9 +6989,7 @@
   }
 
   async function playAudioWithProgressiveSampleNotes(audioContext, requestId) {
-    const startOffset = state.isPaused && state.pausedOffsetSeconds < durationSeconds() - 0.01
-      ? clamp(state.pausedOffsetSeconds, 0, durationSeconds())
-      : 0;
+    const startOffset = preferredPlaybackStartOffset(durationSeconds());
     const compositeScoreEvents = currentRenderLayerState().scoreEvents;
     const progressiveScoreEvents = compositeScoreEvents.length
       ? compositeScoreEvents
@@ -7077,9 +7128,7 @@
     };
 
     state.sourceNode = source;
-    const startOffset = state.isPaused && state.pausedOffsetSeconds < buffer.duration - 0.01
-      ? clamp(state.pausedOffsetSeconds, 0, buffer.duration)
-      : 0;
+    const startOffset = preferredPlaybackStartOffset(buffer.duration);
     state.isPlaying = true;
     state.isPaused = false;
     state.playStartedAt = audioContext.currentTime - startOffset;
@@ -7818,6 +7867,22 @@
     if (!point) {
       return;
     }
+    if (state.tool === "pointer") {
+      if (state.isPlaying) {
+        pausePlayback();
+      }
+      state.pointerId = event.pointerId;
+      state.isScrubbingPlayhead = true;
+      state.drawing = false;
+      state.currentPointer = point;
+      state.pointerInside = true;
+      setPlayheadFromColumn(point.col);
+      updateCursorReadout(point);
+      canvas.setPointerCapture(event.pointerId);
+      setStatus(timelinePositionStatus());
+      renderCanvas();
+      return;
+    }
     const scorePoint = state.tool === "note" ? snapPointToScoreMidi(point) : point;
     if (state.tool === "note" && !scorePoint) {
       return;
@@ -7910,7 +7975,7 @@
 
     if (state.isScrubbingPlayhead && state.pointerId === event.pointerId) {
       setPlayheadFromColumn(point.col);
-      setStatus(`Paused at ${state.pausedOffsetSeconds.toFixed(2)} s. Drag the playhead to shift the current time slice.`);
+      setStatus(timelinePositionStatus());
     } else if (state.drawing && state.pointerId === event.pointerId) {
       if (state.scoreEditMode) {
         const originalNote = state.scoreEditOriginalNote;
@@ -8399,12 +8464,28 @@
       renderCanvas();
     });
 
-    playButton.addEventListener("click", () => {
-      if (state.transportPending === "play" || state.isPlaying) {
+    let playButtonPointerHandled = false;
+    const togglePlaybackFromControl = () => {
+      if (transportIsActive()) {
         pausePlayback();
       } else {
         playAudio();
       }
+    };
+    playButton.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      playButtonPointerHandled = true;
+      togglePlaybackFromControl();
+    });
+    playButton.addEventListener("click", () => {
+      if (playButtonPointerHandled) {
+        playButtonPointerHandled = false;
+        return;
+      }
+      togglePlaybackFromControl();
     });
     stopButton.addEventListener("click", () => {
       stopPlayback("Playback stopped.");
@@ -8499,11 +8580,16 @@
 
       if (event.code === "Space") {
         event.preventDefault();
-        if (state.transportPending === "play" || state.isPlaying) {
+        if (transportIsActive()) {
           pausePlayback();
         } else {
           playAudio();
         }
+        return;
+      }
+
+      if (event.key.toLowerCase() === "v") {
+        setTool("pointer");
         return;
       }
 
@@ -8572,10 +8658,10 @@
     state.currentTabId = initialTab.id;
     bindActiveLayer(initialTab.layers[0]);
     updateWorkspaceUi();
-    setTool("brush");
     if (!restoreSessionProjectIfAvailable()) {
       applyPreset("riser");
     }
+    setTool("pointer");
     window.__spectrogramBooted = true;
   } catch (error) {
     reportBootError(error);
