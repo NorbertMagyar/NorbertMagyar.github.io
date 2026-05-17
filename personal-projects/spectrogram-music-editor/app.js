@@ -295,6 +295,7 @@
       previewBaseDirtyToken: 0,
       liveSampleInstrument: null,
       liveSampleScheduler: null,
+      liveSampleIntervalId: 0,
       liveSampleGainNode: null,
       liveSampleStopFns: [],
       liveSampleScoreEvents: [],
@@ -5106,6 +5107,10 @@
     state.liveSampleStopFns = [];
     state.liveSampleInstrument = null;
     state.liveSampleScheduler = null;
+    if (state.liveSampleIntervalId) {
+      window.clearInterval(state.liveSampleIntervalId);
+      state.liveSampleIntervalId = 0;
+    }
     if (state.liveSampleGainNode) {
       try {
         state.liveSampleGainNode.disconnect();
@@ -8288,16 +8293,60 @@
     scheduleLiveSampleStop(stopFn);
   }
 
+  function currentLiveSampleLookaheadSeconds() {
+    return document.hidden
+      ? Math.max(LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS, 3.5)
+      : LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS;
+  }
+
+  function scheduleLiveOverlappingNotesAt(absTime) {
+    if (!state.liveSampleScoreEvents.length || !state.audioContext || !state.liveSampleInstrument) {
+      return;
+    }
+    const duration = Math.max(0.001, state.playDurationSeconds || durationSeconds());
+    const safeStartTime = state.audioContext.currentTime + 0.01;
+    if (state.loopPlayback) {
+      const cycle = Math.floor(absTime / duration);
+      const within = absTime - cycle * duration;
+      for (const note of state.liveSampleScoreEvents) {
+        const noteEnd = note.startSec + Math.max(0.02, note.durationSec);
+        if (note.startSec < within && noteEnd > within) {
+          scheduleLiveNoteEvent(note, safeStartTime, Math.max(0.02, noteEnd - within));
+        }
+      }
+      return;
+    }
+    for (const note of state.liveSampleScoreEvents) {
+      const noteEnd = note.startSec + Math.max(0.02, note.durationSec);
+      if (note.startSec < absTime && noteEnd > absTime) {
+        scheduleLiveNoteEvent(note, safeStartTime, Math.max(0.02, noteEnd - absTime));
+      }
+    }
+  }
+
+  function startLiveSampleSchedulerTimer() {
+    if (state.liveSampleIntervalId) {
+      window.clearInterval(state.liveSampleIntervalId);
+    }
+    state.liveSampleIntervalId = window.setInterval(() => {
+      if (!state.liveSampleUsesProgressive || !state.isPlaying) {
+        return;
+      }
+      scheduleLiveSampleNotes();
+    }, 200);
+  }
+
   function scheduleLiveSampleNotes(forceInitial = false) {
     if (!state.liveSampleUsesProgressive || !state.liveSampleInstrument || !state.audioContext || !state.isPlaying) {
       return;
     }
     const duration = Math.max(0.001, state.playDurationSeconds || durationSeconds());
     const nowAbs = Math.max(0, state.audioContext.currentTime - state.playStartedAt);
+    const lookaheadSeconds = currentLiveSampleLookaheadSeconds();
     const targetAbs = state.loopPlayback
-      ? nowAbs + LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS
-      : Math.min(duration, nowAbs + LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS);
-    const startAbs = Math.max(0, state.liveSampleScheduledUntilSec);
+      ? nowAbs + lookaheadSeconds
+      : Math.min(duration, nowAbs + lookaheadSeconds);
+    let startAbs = Math.max(0, state.liveSampleScheduledUntilSec);
     const upcomingNote = nextNoteStartSec(state.liveSampleScoreEvents, startAbs);
     if (!forceInitial && targetAbs <= startAbs + 1e-6) {
       return;
@@ -8316,6 +8365,11 @@
           );
         }
       }
+    }
+
+    if (!forceInitial && startAbs < nowAbs - 0.12) {
+      scheduleLiveOverlappingNotesAt(nowAbs);
+      startAbs = nowAbs;
     }
 
     if (state.loopPlayback) {
@@ -8439,6 +8493,7 @@
     state.lastPlaybackLoopIndex = Math.floor(startOffset / Math.max(0.001, state.playDurationSeconds));
     followPlaybackViewport({ allowBackward: true });
     scheduleLiveSampleNotes(true);
+    startLiveSampleSchedulerTimer();
     state.transportPending = "";
     setSampleDebug(`playback started at ${startOffset.toFixed(2)}s for active ${state.scoreEvents.length} / composite ${state.liveSampleScoreEvents.length} notes. scheduled ${state.sampleDebugScheduledCount}, started ${state.sampleDebugStartedCount}.`);
     setStatus(`Playing ${noteBackendName(state.noteBackend).toLowerCase()} with progressive note scheduling.`);
@@ -10412,6 +10467,12 @@
       renderCanvas();
     });
     window.addEventListener("pagehide", persistSessionProjectNow);
+    document.addEventListener("visibilitychange", () => {
+      if (!state.liveSampleUsesProgressive || !state.isPlaying) {
+        return;
+      }
+      scheduleLiveSampleNotes();
+    });
     window.addEventListener("pointerdown", (event) => {
       if (!state.toolSettingsOpen || !toolSettingsWrap) {
         return;
