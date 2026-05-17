@@ -3588,7 +3588,8 @@
   }
 
   function pausePlayback() {
-    if (cancelPendingTransport("Playback start canceled.")) {
+    if (state.transportPending === "play" && !state.isPlaying) {
+      cancelPendingTransport("Playback start canceled.");
       renderCanvas();
       return;
     }
@@ -6829,6 +6830,7 @@
     state.lastPlaybackLoopIndex = Math.floor(startOffset / Math.max(0.001, state.playDurationSeconds));
     followPlaybackViewport({ allowBackward: true });
     scheduleLiveSampleNotes(true);
+    state.transportPending = "";
     setSampleDebug(`playback started at ${startOffset.toFixed(2)}s for active ${state.scoreEvents.length} / composite ${state.liveSampleScoreEvents.length} notes. scheduled ${state.sampleDebugScheduledCount}, started ${state.sampleDebugStartedCount}.`);
     setStatus(`Playing ${noteBackendName(state.noteBackend).toLowerCase()} with progressive note scheduling.`);
     updateOutputs();
