@@ -314,6 +314,7 @@
       toolSettingsOpen: false,
       frequencyZoomReference: null,
       clipboardLayer: null,
+      noteClipboard: null,
       tabs: [],
       currentTabId: null,
       activeLayerId: null,
@@ -2206,6 +2207,92 @@
       };
     }
     return null;
+  }
+
+  function currentEditableScoreHit() {
+    if (state.scoreEditIndex >= 0 && state.scoreEditIndex < state.scoreEvents.length) {
+      return {
+        index: state.scoreEditIndex,
+        note: state.scoreEvents[state.scoreEditIndex]
+      };
+    }
+    const hoverHit = hitTestScoreNote(state.currentPointer);
+    if (hoverHit) {
+      return hoverHit;
+    }
+    return null;
+  }
+
+  function copyScoreNoteToClipboard(note) {
+    if (!note) {
+      return false;
+    }
+    state.noteClipboard = { ...note };
+    return true;
+  }
+
+  function duplicateScoreNoteEvent(note) {
+    if (!note) {
+      return null;
+    }
+    const duplicate = { ...note };
+    state.scoreEvents = [...state.scoreEvents, duplicate];
+    return {
+      note: duplicate,
+      index: state.scoreEvents.length - 1
+    };
+  }
+
+  function scoreNotePasteTargetPoint() {
+    const snappedPointer = snapPointToScoreMidi(state.currentPointer);
+    if (snappedPointer) {
+      return snappedPointer;
+    }
+    if (!isScoreSheetMode()) {
+      return null;
+    }
+    const clipboardMidi = state.noteClipboard ? state.noteClipboard.midi : currentScoreProfile().minMidi;
+    return {
+      col: playheadColumn(),
+      row: rowFromFreq(midiToFreq(clipboardMidi)),
+      midi: clamp(clipboardMidi, currentScoreProfile().minMidi, currentScoreProfile().maxMidi)
+    };
+  }
+
+  function pasteScoreNoteFromClipboard() {
+    if (!state.noteClipboard || !isScoreSheetMode()) {
+      return false;
+    }
+    const targetPoint = scoreNotePasteTargetPoint();
+    const source = state.noteClipboard;
+    const trackDuration = durationSeconds();
+    const nextNote = {
+      ...source,
+      startSec: clamp(
+        targetPoint ? timeFromCol(targetPoint.col) : source.startSec,
+        0,
+        Math.max(0, trackDuration - source.durationSec)
+      ),
+      midi: targetPoint && Number.isFinite(targetPoint.midi)
+        ? targetPoint.midi
+        : clamp(source.midi, currentScoreProfile().minMidi, currentScoreProfile().maxMidi)
+    };
+    beginUndoGesture();
+    state.scoreEvents = mergeAdjacentNoteEvents([
+      ...state.scoreEvents,
+      nextNote
+    ]);
+    const span = noteRenderSpan(nextNote);
+    markDirty({
+      full: false,
+      layers: ["score"],
+      rangeStartSec: span.startSec,
+      rangeEndSec: span.endSec
+    });
+    commitUndoGesture();
+    setStatus(`Pasted note at ${nextNote.startSec.toFixed(2)} s.`);
+    renderCanvas();
+    return true;
   }
 
   function applyScoreNoteEdit(point) {
@@ -8194,9 +8281,21 @@
         state.lastPointer = scorePoint || point;
         state.currentPointer = scorePoint || point;
         state.pointerInside = true;
-        state.scoreEditMode = scoreHit.mode;
-        state.scoreEditIndex = scoreHit.index;
-        state.scoreEditOriginalNote = { ...scoreHit.note };
+        if (event.ctrlKey || event.metaKey) {
+          copyScoreNoteToClipboard(scoreHit.note);
+          const duplicate = duplicateScoreNoteEvent(scoreHit.note);
+          if (!duplicate) {
+            cancelUndoGesture();
+            return;
+          }
+          state.scoreEditMode = "move";
+          state.scoreEditIndex = duplicate.index;
+          state.scoreEditOriginalNote = { ...duplicate.note };
+        } else {
+          state.scoreEditMode = scoreHit.mode;
+          state.scoreEditIndex = scoreHit.index;
+          state.scoreEditOriginalNote = { ...scoreHit.note };
+        }
         state.scoreEditStartPoint = point;
         state.scoreEditStartMidi = nearestScoreMidiForPoint(point);
         updateCursorReadout(scorePoint || point);
@@ -8884,6 +8983,23 @@
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
         undoLastGesture();
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "c") {
+        const scoreHit = currentEditableScoreHit();
+        if (scoreHit && copyScoreNoteToClipboard(scoreHit.note)) {
+          event.preventDefault();
+          setStatus(`Copied note at ${scoreHit.note.startSec.toFixed(2)} s.`);
+          renderCanvas();
+        }
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v") {
+        if (pasteScoreNoteFromClipboard()) {
+          event.preventDefault();
+        }
         return;
       }
 
