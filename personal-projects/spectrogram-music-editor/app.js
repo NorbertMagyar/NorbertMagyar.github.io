@@ -117,6 +117,8 @@
     const clearButton = document.getElementById("clear-btn");
     const presetButton = document.getElementById("preset-btn");
     const presetSelect = document.getElementById("preset-select");
+    const scorePresetButton = document.getElementById("score-preset-btn");
+    const scorePresetSelect = document.getElementById("score-preset-select");
     const scoreImportButton = document.getElementById("score-import-btn");
     const scoreImportInput = document.getElementById("score-import-input");
     const basslineButton = document.getElementById("bassline-btn");
@@ -7581,6 +7583,25 @@
     importParsedScore(parsedScore);
   }
 
+  async function importBundledScorePreset(assetPath) {
+    if (!assetPath) {
+      return;
+    }
+    const fileName = decodeURIComponent(assetPath.split("/").pop() || assetPath);
+    const response = await fetch(assetPath, { cache: "force-cache" });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch bundled score "${fileName}" (${response.status}).`);
+    }
+    let parsedScore;
+    const lowerName = fileName.toLowerCase();
+    if (lowerName.endsWith(".mid") || lowerName.endsWith(".midi")) {
+      parsedScore = parseMidiScore(await response.arrayBuffer());
+    } else {
+      parsedScore = parseMusicXmlScore(await response.text());
+    }
+    importParsedScore(parsedScore);
+  }
+
   function applyPreset(name) {
     drawData.fill(0);
     clearImportedScoreEvents();
@@ -8314,6 +8335,24 @@
           setStatus(`Score import failed: ${error.message || String(error)}`);
         } finally {
           scoreImportInput.value = "";
+        }
+      });
+    }
+
+    if (scorePresetButton && scorePresetSelect) {
+      scorePresetButton.addEventListener("click", async () => {
+        const assetPath = scorePresetSelect.value;
+        if (!assetPath) {
+          return;
+        }
+        closeMenuForElement(scorePresetButton);
+        try {
+          const presetName = decodeURIComponent(assetPath.split("/").pop() || assetPath);
+          setStatus(`Loading bundled score ${presetName}...`);
+          await importBundledScorePreset(assetPath);
+        } catch (error) {
+          reportBootError(error);
+          setStatus(`Bundled score load failed: ${error.message || String(error)}`);
         }
       });
     }
