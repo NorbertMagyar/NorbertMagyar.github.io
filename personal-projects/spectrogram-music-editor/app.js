@@ -205,7 +205,7 @@
     let scoreEventsRef = [];
     let nextTabId = 1;
     let nextLayerId = 1;
-    const margins = { left: 150, right: 28, top: 26, bottom: 54 };
+    const margins = { left: 120, right: 28, top: 26, bottom: 54 };
     const SCORE_VIEW_PROFILES = {
       "guitar-score": {
         label: "guitar score sheet",
