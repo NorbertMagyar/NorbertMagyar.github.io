@@ -335,10 +335,7 @@
 }
 
 .editor-workspace {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 240px;
-  gap: 0;
-  align-items: start;
+  display: block;
 }
 
 .editor-main {
@@ -346,6 +343,19 @@
   gap: 0.85rem;
   min-width: 0;
   padding: 1rem;
+}
+
+.editor-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 0;
+  align-items: start;
+}
+
+.editor-stage-main {
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
 }
 
 .editor-layers-panel {
@@ -1165,7 +1175,7 @@ input[type="range"] {
     grid-template-columns: 1fr;
   }
 
-  .editor-workspace {
+  .editor-stage {
     grid-template-columns: 1fr;
   }
 
