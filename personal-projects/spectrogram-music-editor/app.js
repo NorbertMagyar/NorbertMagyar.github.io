@@ -39,7 +39,7 @@
     const RENDER_YIELD_INTERVAL_MS = 28;
     const RENDER_MIX_CHUNK_SIZE = 131072;
     const PARTIAL_RENDER_CROSSFADE_SAMPLES = 192;
-    const SOUNDPAINT_PROJECT_VERSION = 1;
+    const SOUNDPAINT_PROJECT_VERSION = 2;
     const SOUNDPAINT_SESSION_STORAGE_KEY = "soundpaint-autosave-v1";
     const DEFAULT_GUITAR_PLUCK_POSITION = 0.19;
     const DEFAULT_GUITAR_BODY_RESONANCE = 0.92;
@@ -48,6 +48,8 @@
     const SMPLR_RENDER_WINDOW_SECONDS = 12;
     const SMPLR_RENDER_PREROLL_SECONDS = 1.4;
     const SMPLR_RENDER_TAIL_SECONDS = 1.4;
+    const LIVE_SAMPLE_PLAY_WINDOW_SECONDS = 8;
+    const LIVE_SAMPLE_RENDER_AHEAD_SECONDS = 18;
     const LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS = 0.75;
     const SMPLR_MODULE_URL = "https://unpkg.com/smplr/dist/index.mjs";
     const SMPLR_NOTE_BACKENDS = {
@@ -97,8 +99,8 @@
 
     const statusText = document.getElementById("status-text");
     const cursorReadout = document.getElementById("cursor-readout");
+    const sampleDebugText = document.getElementById("sample-debug-text");
     const playButton = document.getElementById("play-btn");
-    const pauseButton = document.getElementById("pause-btn");
     const stopButton = document.getElementById("stop-btn");
     const loopButton = document.getElementById("loop-btn");
     const renderButton = document.getElementById("render-btn");
@@ -106,6 +108,11 @@
     const projectSaveButton = document.getElementById("project-save-btn");
     const projectLoadButton = document.getElementById("project-load-btn");
     const projectLoadInput = document.getElementById("project-load-input");
+    const tabStrip = document.getElementById("tab-strip");
+    const newTabButton = document.getElementById("new-tab-btn");
+    const layerList = document.getElementById("layer-list");
+    const newLayerButton = document.getElementById("new-layer-btn");
+    const pasteLayerButton = document.getElementById("paste-layer-btn");
     const undoButton = document.getElementById("undo-btn");
     const clearButton = document.getElementById("clear-btn");
     const presetButton = document.getElementById("preset-btn");
@@ -129,6 +136,10 @@
     const renderOverlayDetail = document.getElementById("render-overlay-detail");
     const renderProgressBar = document.getElementById("render-progress-bar");
     const renderProgressText = document.getElementById("render-progress-text");
+    const surfaceToolbar = document.querySelector(".surface-toolbar");
+    const menuDropdowns = Array.from(document.querySelectorAll(".menu-dropdown"));
+    const PLAY_ICON_SVG = `<svg viewBox="0 0 24 24"><path d="M8 6.5v11l9-5.5z" fill="currentColor" stroke="none"/></svg>`;
+    const PAUSE_ICON_SVG = `<svg viewBox="0 0 24 24"><path d="M8 6h3v12H8zM13 6h3v12h-3z" fill="currentColor" stroke="none"/></svg>`;
     const toolButtons = Array.from(document.querySelectorAll("[data-tool]"));
 
     const durationInput = document.getElementById("duration-input");
@@ -151,7 +162,10 @@
     const pianoCouplingInput = document.getElementById("piano-coupling-input");
     const editorViewSelect = document.getElementById("editor-view-select");
     const frequencyAxisSelect = document.getElementById("frequency-axis-select");
+    const drawingToolsToggle = document.getElementById("drawing-tools-toggle");
     const gridToggle = document.getElementById("grid-toggle");
+    const DEFAULT_FREE_MIN_FREQ = Number(minFreqInput.value);
+    const DEFAULT_FREE_MAX_FREQ = Number(maxFreqInput.value);
 
     const durationOut = document.getElementById("duration-out");
     const minFreqOut = document.getElementById("minfreq-out");
@@ -176,9 +190,12 @@
     }
 
     const pixelImage = offCtx.createImageData(VIEW_COLS, GRID_ROWS);
-    const drawData = new Float32Array(GRID_COLS * GRID_ROWS);
-    const basslineData = new Float32Array(GRID_COLS * GRID_ROWS);
-    const bassEvents = [];
+    let drawData = new Float32Array(GRID_COLS * GRID_ROWS);
+    let basslineData = new Float32Array(GRID_COLS * GRID_ROWS);
+    let bassEvents = [];
+    let scoreEventsRef = [];
+    let nextTabId = 1;
+    let nextLayerId = 1;
     const margins = { left: 74, right: 28, top: 26, bottom: 54 };
     const SCORE_VIEW_PROFILES = {
       "guitar-score": {
@@ -257,11 +274,12 @@
       liveSampleScheduler: null,
       liveSampleGainNode: null,
       liveSampleStopFns: [],
+      liveSampleScoreEvents: [],
       liveSampleScheduledUntilSec: 0,
+      liveSampleRenderedWindows: new Set(),
+      liveSampleRenderingWindows: new Set(),
       liveSampleSessionId: 0,
       liveSampleUsesProgressive: false,
-      bassEvents,
-      scoreEvents: [],
       currentBasslinePreset: "none",
       editorView: "spectrogram",
       frequencyAxis: frequencyAxisSelect ? frequencyAxisSelect.value || "log" : "log",
@@ -271,15 +289,25 @@
       noteBackendWarning: "",
       showPhaseDiagnostics: false,
       loopPlayback: false,
+      showDrawingTools: true,
       dataVersion: 0,
       diagnosticsCache: null,
       latestRenderInfo: null,
       lastPlaybackLoopIndex: 0,
+      sampleDebugScheduledCount: 0,
+      sampleDebugStartedCount: 0,
+      transportPending: "",
+      transportRequestId: 0,
       undoStack: [],
       pendingUndoSnapshot: null,
       pendingUndoVersion: -1,
       toolSettingsOpen: false,
       frequencyZoomReference: null,
+      clipboardLayer: null,
+      tabs: [],
+      currentTabId: null,
+      activeLayerId: null,
+      compositeLayerCache: null,
       scoreViewFreqs: {
         "guitar-score": defaultFrequencyRangeForView("guitar-score"),
         "piano-score": defaultFrequencyRangeForView("piano-score")
@@ -287,6 +315,30 @@
       freeMinFreq: Number(minFreqInput.value),
       freeMaxFreq: Number(maxFreqInput.value)
     };
+    Object.defineProperty(state, "bassEvents", {
+      get() {
+        return bassEvents;
+      },
+      set(value) {
+        bassEvents = Array.isArray(value) ? value : [];
+        const layer = currentLayerRecord();
+        if (layer) {
+          layer.bassEvents = bassEvents;
+        }
+      }
+    });
+    Object.defineProperty(state, "scoreEvents", {
+      get() {
+        return scoreEventsRef;
+      },
+      set(value) {
+        scoreEventsRef = Array.isArray(value) ? value : [];
+        const layer = currentLayerRecord();
+        if (layer) {
+          layer.scoreEvents = scoreEventsRef;
+        }
+      }
+    });
     const smplrModuleState = {
       loadingPromise: null,
       module: null
@@ -778,11 +830,17 @@
   }
 
   function sampleNoteBackendSupportsProgressivePlay() {
-    return Boolean(SMPLR_NOTE_BACKENDS[state.noteBackend] && state.scoreEvents.length);
+    const compositeScoreCount = currentRenderLayerState().scoreEvents.length;
+    return Boolean(
+      !state.loopPlayback
+      && SMPLR_NOTE_BACKENDS[state.noteBackend]
+      && (compositeScoreCount || state.scoreEvents.length)
+    );
   }
 
   function hasPreviewBaseLayers() {
-    return state.bassEvents.length > 0 || layerHasEnergy(drawData);
+    const composite = currentRenderLayerState();
+    return composite.bassEvents.length > 0 || layerHasEnergy(composite.drawData);
   }
 
   function hasCurrentRenderedBuffer() {
@@ -986,6 +1044,625 @@
     return 120;
   }
 
+  function createEmptyLayer(name = `Layer ${nextLayerId}`) {
+    return {
+      id: `layer-${nextLayerId++}`,
+      name,
+      visible: true,
+      drawData: new Float32Array(GRID_COLS * GRID_ROWS),
+      basslineData: new Float32Array(GRID_COLS * GRID_ROWS),
+      bassEvents: [],
+      scoreEvents: []
+    };
+  }
+
+  function cloneLayerRecord(layer, name = layer.name) {
+    return {
+      id: `layer-${nextLayerId++}`,
+      name,
+      visible: layer.visible !== false,
+      drawData: layer.drawData.slice(),
+      basslineData: layer.basslineData.slice(),
+      bassEvents: cloneEventList(layer.bassEvents || []),
+      scoreEvents: cloneEventList(layer.scoreEvents || [])
+    };
+  }
+
+  function buildTabSettingsFromCurrentState() {
+    return {
+      durationSeconds: durationSeconds(),
+      gain: Number(gainInput.value),
+      brushSize: Number(sizeInput.value),
+      strength: Number(strengthInput.value),
+      density: Number(densityInput.value),
+      basslineBpm: basslineBpm(),
+      editorView: state.editorView,
+      renderMode: state.renderMode,
+      noteBackend: state.noteBackend,
+      frequencyAxis: frequencyAxisMode(),
+      showPhaseDiagnostics: state.showPhaseDiagnostics,
+      loopPlayback: state.loopPlayback,
+      showDrawingTools: state.showDrawingTools,
+      currentBasslinePreset: state.currentBasslinePreset,
+      freeMinFreq: state.freeMinFreq,
+      freeMaxFreq: state.freeMaxFreq,
+      scoreViewFreqs: {
+        "guitar-score": { ...state.scoreViewFreqs["guitar-score"] },
+        "piano-score": { ...state.scoreViewFreqs["piano-score"] }
+      },
+      viewOffsetCol: state.viewOffsetCol,
+      viewColSpan: state.viewColSpan,
+      showGrid: Boolean(gridToggle && gridToggle.checked),
+      tool: state.tool
+    };
+  }
+
+  function applyTabSettings(settings) {
+    const nextDuration = clamp(
+      Number(settings.durationSeconds) || durationSeconds(),
+      Number(durationInput.min),
+      Number(durationInput.max)
+    );
+    durationInput.value = String(nextDuration);
+    gainInput.value = String(clamp(Number(settings.gain) || Number(gainInput.value), Number(gainInput.min), Number(gainInput.max)));
+    sizeInput.value = String(clamp(Number(settings.brushSize) || Number(sizeInput.value), Number(sizeInput.min), Number(sizeInput.max)));
+    strengthInput.value = String(clamp(Number(settings.strength) || Number(strengthInput.value), Number(strengthInput.min), Number(strengthInput.max)));
+    densityInput.value = String(clamp(Number(settings.density) || Number(densityInput.value), Number(densityInput.min), Number(densityInput.max)));
+    basslineBpmInput.value = String(clamp(Number(settings.basslineBpm) || basslineBpm(), Number(basslineBpmInput.min), Number(basslineBpmInput.max)));
+    state.editorView = settings.editorView in SCORE_VIEW_PROFILES || settings.editorView === "spectrogram"
+      ? settings.editorView
+      : "spectrogram";
+    state.renderMode = typeof settings.renderMode === "string" ? settings.renderMode : "geometry";
+    state.noteBackend = isValidNoteBackend(settings.noteBackend) ? settings.noteBackend : "procedural";
+    state.frequencyAxis = settings.frequencyAxis === "linear" ? "linear" : "log";
+    state.showPhaseDiagnostics = Boolean(settings.showPhaseDiagnostics);
+    state.loopPlayback = Boolean(settings.loopPlayback);
+    state.showDrawingTools = settings.showDrawingTools !== false;
+    state.currentBasslinePreset = typeof settings.currentBasslinePreset === "string" ? settings.currentBasslinePreset : "none";
+    state.freeMinFreq = Number(settings.freeMinFreq) || state.freeMinFreq;
+    state.freeMaxFreq = Number(settings.freeMaxFreq) || state.freeMaxFreq;
+    if (settings.scoreViewFreqs && settings.scoreViewFreqs["guitar-score"]) {
+      state.scoreViewFreqs["guitar-score"] = {
+        min: Number(settings.scoreViewFreqs["guitar-score"].min) || state.scoreViewFreqs["guitar-score"].min,
+        max: Number(settings.scoreViewFreqs["guitar-score"].max) || state.scoreViewFreqs["guitar-score"].max
+      };
+    }
+    if (settings.scoreViewFreqs && settings.scoreViewFreqs["piano-score"]) {
+      state.scoreViewFreqs["piano-score"] = {
+        min: Number(settings.scoreViewFreqs["piano-score"].min) || state.scoreViewFreqs["piano-score"].min,
+        max: Number(settings.scoreViewFreqs["piano-score"].max) || state.scoreViewFreqs["piano-score"].max
+      };
+    }
+    if (editorViewSelect) {
+      editorViewSelect.value = state.editorView;
+    }
+    if (renderModeSelect) {
+      renderModeSelect.value = state.renderMode;
+    }
+    if (noteBackendSelect) {
+      noteBackendSelect.value = state.noteBackend;
+    }
+    if (frequencyAxisSelect) {
+      frequencyAxisSelect.value = state.frequencyAxis;
+    }
+    if (gridToggle) {
+      gridToggle.checked = settings.showGrid !== false;
+    }
+    if (drawingToolsToggle) {
+      drawingToolsToggle.checked = state.showDrawingTools;
+    }
+    const loadedRange = state.editorView === "spectrogram"
+      ? { min: state.freeMinFreq, max: state.freeMaxFreq }
+      : state.scoreViewFreqs[state.editorView] || defaultFrequencyRangeForView(state.editorView);
+    const normalizedRange = sanitizeFrequencyRange(loadedRange.min, loadedRange.max);
+    minFreqInput.value = String(Math.round(normalizedRange.min));
+    maxFreqInput.value = String(Math.round(normalizedRange.max));
+    rememberCurrentFrequencyRange(normalizedRange.min, normalizedRange.max);
+    minFreqInput.disabled = false;
+    maxFreqInput.disabled = false;
+    state.viewColSpan = Number(settings.viewColSpan) || state.viewColSpan;
+    state.viewOffsetCol = Number(settings.viewOffsetCol) || 0;
+    clampViewSpan();
+    clampViewOffset();
+    state.frequencyZoomReference = null;
+    setTool(typeof settings.tool === "string" ? settings.tool : "brush");
+  }
+
+  function createTabFromCurrentState(name = `Tab ${nextTabId}`) {
+    const layer = createEmptyLayer("Layer 1");
+    layer.drawData.set(drawData);
+    layer.basslineData.set(basslineData);
+    layer.bassEvents = cloneEventList(state.bassEvents);
+    layer.scoreEvents = cloneEventList(state.scoreEvents);
+    return {
+      id: `tab-${nextTabId++}`,
+      name,
+      activeLayerId: layer.id,
+      settings: buildTabSettingsFromCurrentState(),
+      layers: [layer]
+    };
+  }
+
+  function createBlankTab(name = `Tab ${nextTabId}`) {
+    const layer = createEmptyLayer("Layer 1");
+    return {
+      id: `tab-${nextTabId++}`,
+      name,
+      activeLayerId: layer.id,
+      settings: buildTabSettingsFromCurrentState(),
+      layers: [layer]
+    };
+  }
+
+  function currentTabRecord() {
+    return state.tabs.find((tab) => tab.id === state.currentTabId) || null;
+  }
+
+  function currentLayerRecord() {
+    const tab = currentTabRecord();
+    if (!tab) {
+      return null;
+    }
+    return tab.layers.find((layer) => layer.id === state.activeLayerId)
+      || tab.layers.find((layer) => layer.id === tab.activeLayerId)
+      || tab.layers[0]
+      || null;
+  }
+
+  function bindActiveLayer(layer) {
+    if (!layer) {
+      return;
+    }
+    state.activeLayerId = layer.id;
+    const tab = currentTabRecord();
+    if (tab) {
+      tab.activeLayerId = layer.id;
+    }
+    drawData = layer.drawData;
+    basslineData = layer.basslineData;
+    state.bassEvents = layer.bassEvents;
+    state.scoreEvents = layer.scoreEvents;
+  }
+
+  function saveCurrentTabState() {
+    const tab = currentTabRecord();
+    if (!tab) {
+      return;
+    }
+    tab.settings = buildTabSettingsFromCurrentState();
+    tab.activeLayerId = state.activeLayerId;
+    const activeLayer = currentLayerRecord();
+    if (activeLayer) {
+      activeLayer.drawData = drawData;
+      activeLayer.basslineData = basslineData;
+      activeLayer.bassEvents = state.bassEvents;
+      activeLayer.scoreEvents = state.scoreEvents;
+    }
+  }
+
+  function invalidateCompositeLayerCache() {
+    state.compositeLayerCache = null;
+  }
+
+  function visibleLayersInCurrentTab() {
+    const tab = currentTabRecord();
+    if (!tab) {
+      return [];
+    }
+    return tab.layers.filter((layer) => layer.visible !== false);
+  }
+
+  function currentTabUsesCompositeLayers() {
+    return visibleLayersInCurrentTab().length > 1;
+  }
+
+  function layersRequireFullRender() {
+    return currentTabUsesCompositeLayers();
+  }
+
+  function getCompositeLayerState() {
+    const tab = currentTabRecord();
+    if (!tab) {
+      return {
+        drawData,
+        basslineData,
+        bassEvents: state.bassEvents,
+        scoreEvents: state.scoreEvents
+      };
+    }
+    const cacheKey = `${state.currentTabId}:${state.dataVersion}:${tab.layers.map((layer) => `${layer.id}:${layer.visible !== false ? 1 : 0}`).join("|")}`;
+    if (state.compositeLayerCache && state.compositeLayerCache.key === cacheKey) {
+      return state.compositeLayerCache.value;
+    }
+    const visibleLayers = visibleLayersInCurrentTab();
+    if (visibleLayers.length === 0) {
+      const value = {
+        drawData: new Float32Array(GRID_COLS * GRID_ROWS),
+        basslineData: new Float32Array(GRID_COLS * GRID_ROWS),
+        bassEvents: [],
+        scoreEvents: []
+      };
+      state.compositeLayerCache = { key: cacheKey, value };
+      return value;
+    }
+    if (visibleLayers.length === 1) {
+      const [singleLayer] = visibleLayers;
+      const value = {
+        drawData: singleLayer.drawData,
+        basslineData: singleLayer.basslineData,
+        bassEvents: singleLayer.bassEvents,
+        scoreEvents: singleLayer.scoreEvents
+      };
+      state.compositeLayerCache = { key: cacheKey, value };
+      return value;
+    }
+    const compositeDraw = new Float32Array(GRID_COLS * GRID_ROWS);
+    const compositeBass = new Float32Array(GRID_COLS * GRID_ROWS);
+    const compositeBassEvents = [];
+    const compositeScoreEvents = [];
+    for (const layer of visibleLayers) {
+      for (let i = 0; i < compositeDraw.length; i += 1) {
+        compositeDraw[i] = clamp(compositeDraw[i] + layer.drawData[i], 0, 1);
+        compositeBass[i] = clamp(compositeBass[i] + layer.basslineData[i], 0, 1);
+      }
+      compositeBassEvents.push(...cloneEventList(layer.bassEvents || []));
+      compositeScoreEvents.push(...cloneEventList(layer.scoreEvents || []));
+    }
+    compositeScoreEvents.sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
+    compositeBassEvents.sort((a, b) => (a.time || 0) - (b.time || 0));
+    const value = {
+      drawData: compositeDraw,
+      basslineData: compositeBass,
+      bassEvents: compositeBassEvents,
+      scoreEvents: compositeScoreEvents
+    };
+    state.compositeLayerCache = { key: cacheKey, value };
+    return value;
+  }
+
+  function currentRenderLayerState() {
+    return getCompositeLayerState();
+  }
+
+  async function withCompositeLayerState(task) {
+    const composite = currentRenderLayerState();
+    const savedDrawData = drawData;
+    const savedBasslineData = basslineData;
+    const savedBassEvents = bassEvents;
+    const savedScoreEvents = state.scoreEvents;
+    const savedActiveLayerId = state.activeLayerId;
+    drawData = composite.drawData;
+    basslineData = composite.basslineData;
+    bassEvents = composite.bassEvents;
+    scoreEventsRef = composite.scoreEvents;
+    try {
+      return await task();
+    } finally {
+      drawData = savedDrawData;
+      basslineData = savedBasslineData;
+      bassEvents = savedBassEvents;
+      scoreEventsRef = savedScoreEvents;
+      state.activeLayerId = savedActiveLayerId;
+    }
+  }
+
+  function renderTabStripUi() {
+    if (!tabStrip) {
+      return;
+    }
+    tabStrip.textContent = "";
+    for (const tab of state.tabs) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = `tab-chip${tab.id === state.currentTabId ? " is-active" : ""}`;
+      chip.setAttribute("role", "tab");
+      chip.setAttribute("aria-selected", tab.id === state.currentTabId ? "true" : "false");
+      chip.innerHTML = `<span class="tab-chip-label">${tab.name}</span>${state.tabs.length > 1 ? '<span class="tab-chip-close" aria-hidden="true">×</span>' : ""}`;
+      chip.addEventListener("click", (event) => {
+        const closeHit = event.target instanceof HTMLElement && event.target.classList.contains("tab-chip-close");
+        if (closeHit) {
+          closeTab(tab.id);
+          return;
+        }
+        switchToTab(tab.id);
+      });
+      tabStrip.appendChild(chip);
+    }
+  }
+
+  function renderLayerListUi() {
+    if (!layerList) {
+      return;
+    }
+    const tab = currentTabRecord();
+    layerList.textContent = "";
+    if (!tab) {
+      return;
+    }
+    const canDeleteLayer = (tab.layers || []).length > 1;
+    const iconMarkup = {
+      visible: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.6-5.5 9.5-5.5S21.5 12 21.5 12s-3.6 5.5-9.5 5.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.7"/></svg>`,
+      hidden: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 4.5l17 15"/><path d="M10 6.8A10.2 10.2 0 0112 6.5c5.9 0 9.5 5.5 9.5 5.5a17 17 0 01-3 3.6"/><path d="M14.1 14.2a2.8 2.8 0 01-4-4"/><path d="M6.1 8.2A17.4 17.4 0 002.5 12s3.6 5.5 9.5 5.5c1 0 1.9-.1 2.8-.4"/></svg>`,
+      copy: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="10" height="10" rx="1.8"/><rect x="5" y="5" width="10" height="10" rx="1.8"/></svg>`,
+      cut: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6.5" cy="17.2" r="2.3"/><circle cx="17.5" cy="17.2" r="2.3"/><path d="M8.3 15.6L18 6"/><path d="M8.5 6l7 7"/></svg>`,
+      delete: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10"/><path d="M17 7L7 17"/></svg>`
+    };
+    for (const layer of tab.layers) {
+      const row = document.createElement("div");
+      row.className = `layer-row${layer.id === state.activeLayerId ? " is-active" : ""}${layer.visible === false ? " is-hidden" : ""}`;
+      row.setAttribute("role", "listitem");
+
+      const nameBtn = document.createElement("button");
+      nameBtn.type = "button";
+      nameBtn.className = "layer-name-btn";
+      nameBtn.textContent = layer.name;
+      nameBtn.title = `${layer.name} — press F2 to rename`;
+      nameBtn.setAttribute("aria-label", `${layer.name}. Press F2 to rename.`);
+      nameBtn.addEventListener("click", () => activateLayer(layer.id));
+
+      const actions = document.createElement("div");
+      actions.className = "layer-actions-inline";
+
+      const visibilityBtn = document.createElement("button");
+      visibilityBtn.type = "button";
+      visibilityBtn.className = `layer-icon-btn${layer.visible === false ? " is-muted" : ""}`;
+      visibilityBtn.title = layer.visible === false ? "Show layer" : "Hide layer";
+      visibilityBtn.setAttribute("aria-label", visibilityBtn.title);
+      visibilityBtn.innerHTML = layer.visible === false ? iconMarkup.hidden : iconMarkup.visible;
+      visibilityBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        layer.visible = layer.visible === false;
+        invalidateCompositeLayerCache();
+        markDirty();
+        updateWorkspaceUi();
+        renderCanvas();
+      });
+
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "layer-icon-btn";
+      copyBtn.title = "Copy layer";
+      copyBtn.setAttribute("aria-label", "Copy layer");
+      copyBtn.innerHTML = iconMarkup.copy;
+      copyBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        activateLayer(layer.id);
+        copyCurrentLayerToClipboard();
+      });
+
+      const cutBtn = document.createElement("button");
+      cutBtn.type = "button";
+      cutBtn.className = "layer-icon-btn";
+      cutBtn.title = "Cut layer";
+      cutBtn.setAttribute("aria-label", "Cut layer");
+      cutBtn.innerHTML = iconMarkup.cut;
+      cutBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        activateLayer(layer.id);
+        cutCurrentLayerToClipboard();
+      });
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "layer-icon-btn";
+      deleteBtn.title = canDeleteLayer ? "Delete layer" : "At least one layer must remain";
+      deleteBtn.setAttribute("aria-label", deleteBtn.title);
+      deleteBtn.innerHTML = iconMarkup.delete;
+      deleteBtn.disabled = !canDeleteLayer;
+      deleteBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (!canDeleteLayer) {
+          return;
+        }
+        activateLayer(layer.id);
+        deleteCurrentLayer();
+      });
+
+      actions.append(visibilityBtn, copyBtn, cutBtn, deleteBtn);
+      row.append(nameBtn, actions);
+      layerList.appendChild(row);
+    }
+    if (pasteLayerButton) {
+      pasteLayerButton.disabled = !state.clipboardLayer;
+    }
+  }
+
+  function updateWorkspaceUi() {
+    renderTabStripUi();
+    renderLayerListUi();
+  }
+
+  function refreshWorkspaceIdCounters() {
+    let maxTab = 0;
+    let maxLayer = 0;
+    for (const tab of state.tabs) {
+      const tabMatch = /tab-(\d+)/.exec(tab.id || "");
+      if (tabMatch) {
+        maxTab = Math.max(maxTab, Number(tabMatch[1]) || 0);
+      }
+      for (const layer of tab.layers || []) {
+        const layerMatch = /layer-(\d+)/.exec(layer.id || "");
+        if (layerMatch) {
+          maxLayer = Math.max(maxLayer, Number(layerMatch[1]) || 0);
+        }
+      }
+    }
+    if (state.clipboardLayer) {
+      const clipMatch = /layer-(\d+)/.exec(state.clipboardLayer.id || "");
+      if (clipMatch) {
+        maxLayer = Math.max(maxLayer, Number(clipMatch[1]) || 0);
+      }
+    }
+    nextTabId = Math.max(nextTabId, maxTab + 1);
+    nextLayerId = Math.max(nextLayerId, maxLayer + 1);
+  }
+
+  function switchToTab(tabId) {
+    if (state.currentTabId === tabId) {
+      return;
+    }
+    saveCurrentTabState();
+    const nextTab = state.tabs.find((tab) => tab.id === tabId);
+    if (!nextTab) {
+      return;
+    }
+    state.currentTabId = tabId;
+    applyTabSettings(nextTab.settings);
+    bindActiveLayer(nextTab.layers.find((layer) => layer.id === nextTab.activeLayerId) || nextTab.layers[0]);
+    resetUndoHistory();
+    invalidateCompositeLayerCache();
+    markDirty();
+    stopPlayback(`Switched to ${nextTab.name}.`);
+    updateWorkspaceUi();
+    updateOutputs();
+    renderCanvas();
+  }
+
+  function activateLayer(layerId) {
+    const tab = currentTabRecord();
+    if (!tab || tab.activeLayerId === layerId) {
+      return;
+    }
+    saveCurrentTabState();
+    const layer = tab.layers.find((entry) => entry.id === layerId);
+    if (!layer) {
+      return;
+    }
+    tab.activeLayerId = layer.id;
+    bindActiveLayer(layer);
+    resetUndoHistory();
+    invalidateCompositeLayerCache();
+    markDirty();
+    stopPlayback(`Activated ${layer.name}.`);
+    updateWorkspaceUi();
+    renderCanvas();
+  }
+
+  function addNewTab() {
+    saveCurrentTabState();
+    const tab = createBlankTab(`Tab ${state.tabs.length + 1}`);
+    state.tabs.push(tab);
+    switchToTab(tab.id);
+  }
+
+  function closeTab(tabId) {
+    if (state.tabs.length <= 1) {
+      return;
+    }
+    saveCurrentTabState();
+    const index = state.tabs.findIndex((tab) => tab.id === tabId);
+    if (index < 0) {
+      return;
+    }
+    state.tabs.splice(index, 1);
+    if (state.currentTabId === tabId) {
+      const fallback = state.tabs[Math.max(0, index - 1)] || state.tabs[0];
+      state.currentTabId = null;
+      switchToTab(fallback.id);
+      return;
+    }
+    invalidateCompositeLayerCache();
+    updateWorkspaceUi();
+    scheduleSessionProjectSave();
+  }
+
+  function addNewLayer() {
+    const tab = currentTabRecord();
+    if (!tab) {
+      return;
+    }
+    saveCurrentTabState();
+    const layer = createEmptyLayer(`Layer ${tab.layers.length + 1}`);
+    tab.layers.push(layer);
+    activateLayer(layer.id);
+  }
+
+  function renameActiveLayer() {
+    const layer = currentLayerRecord();
+    if (!layer) {
+      return;
+    }
+    const nextName = window.prompt("Rename layer", layer.name);
+    if (nextName == null) {
+      return;
+    }
+    const normalized = nextName.trim();
+    if (!normalized || normalized === layer.name) {
+      return;
+    }
+    layer.name = normalized;
+    updateWorkspaceUi();
+    scheduleSessionProjectSave();
+    setStatus(`Renamed layer to ${layer.name}.`);
+  }
+
+  function copyCurrentLayerToClipboard() {
+    const layer = currentLayerRecord();
+    if (!layer) {
+      return;
+    }
+    state.clipboardLayer = cloneLayerRecord(layer, `${layer.name} copy`);
+    updateWorkspaceUi();
+    scheduleSessionProjectSave();
+    setStatus(`Copied layer "${layer.name}".`);
+  }
+
+  function cutCurrentLayerToClipboard() {
+    const tab = currentTabRecord();
+    const layer = currentLayerRecord();
+    if (!tab || !layer) {
+      return;
+    }
+    state.clipboardLayer = cloneLayerRecord(layer, layer.name);
+    if (tab.layers.length === 1) {
+      layer.drawData.fill(0);
+      layer.basslineData.fill(0);
+      layer.bassEvents.length = 0;
+      layer.scoreEvents = [];
+      bindActiveLayer(layer);
+    } else {
+      const index = tab.layers.findIndex((entry) => entry.id === layer.id);
+      tab.layers.splice(index, 1);
+      const fallback = tab.layers[Math.max(0, index - 1)] || tab.layers[0];
+      bindActiveLayer(fallback);
+      tab.activeLayerId = fallback.id;
+    }
+    invalidateCompositeLayerCache();
+    markDirty();
+    updateWorkspaceUi();
+    renderCanvas();
+    setStatus(`Cut layer "${layer.name}".`);
+  }
+
+  function pasteClipboardLayer() {
+    const tab = currentTabRecord();
+    if (!tab || !state.clipboardLayer) {
+      return;
+    }
+    const layer = cloneLayerRecord(state.clipboardLayer, `${state.clipboardLayer.name}`);
+    tab.layers.push(layer);
+    activateLayer(layer.id);
+    setStatus(`Pasted layer "${layer.name}".`);
+  }
+
+  function deleteCurrentLayer() {
+    const tab = currentTabRecord();
+    const layer = currentLayerRecord();
+    if (!tab || !layer || tab.layers.length <= 1) {
+      return;
+    }
+    const index = tab.layers.findIndex((entry) => entry.id === layer.id);
+    tab.layers.splice(index, 1);
+    const fallback = tab.layers[Math.max(0, index - 1)] || tab.layers[0];
+    bindActiveLayer(fallback);
+    tab.activeLayerId = fallback.id;
+    invalidateCompositeLayerCache();
+    markDirty();
+    updateWorkspaceUi();
+    renderCanvas();
+    setStatus(`Deleted layer "${layer.name}".`);
+  }
+
   function isReloadableBasslinePreset(name) {
     return name !== "none" && name !== "custom";
   }
@@ -1067,6 +1744,57 @@
 
   function setStatus(message) {
     statusText.textContent = message;
+  }
+
+  function cancelPendingTransport(statusMessage) {
+    if (state.transportPending !== "play") {
+      return false;
+    }
+    state.transportPending = "";
+    state.transportRequestId += 1;
+    if (statusMessage) {
+      setStatus(statusMessage);
+    }
+    updateOutputs();
+    return true;
+  }
+
+  function setSampleDebug(message) {
+    if (sampleDebugText) {
+      sampleDebugText.textContent = `Sample debug: ${message}`;
+    }
+  }
+
+  function resetSampleDebug(message = "idle.") {
+    state.sampleDebugScheduledCount = 0;
+    state.sampleDebugStartedCount = 0;
+    setSampleDebug(message);
+  }
+
+  function firstNoteStartSec(notes) {
+    if (!notes || !notes.length) {
+      return null;
+    }
+    let first = Infinity;
+    for (const note of notes) {
+      if (note.startSec < first) {
+        first = note.startSec;
+      }
+    }
+    return Number.isFinite(first) ? first : null;
+  }
+
+  function nextNoteStartSec(notes, afterSec) {
+    if (!notes || !notes.length) {
+      return null;
+    }
+    let next = Infinity;
+    for (const note of notes) {
+      if (note.startSec >= afterSec && note.startSec < next) {
+        next = note.startSec;
+      }
+    }
+    return Number.isFinite(next) ? next : null;
   }
 
   function yieldToBrowser() {
@@ -1274,6 +2002,19 @@
     setViewWindow(nextOffset, nextSpan);
   }
 
+  function resetViewportToEditorDefault() {
+    state.viewOffsetCol = 0;
+    state.viewColSpan = VIEW_COLS;
+    const defaultRange = isScoreSheetMode()
+      ? defaultFrequencyRangeForView(state.editorView)
+      : { min: DEFAULT_FREE_MIN_FREQ, max: DEFAULT_FREE_MAX_FREQ };
+    setFrequencyRange(defaultRange.min, defaultRange.max);
+    state.frequencyZoomReference = null;
+    scheduleSessionProjectSave();
+    updateOutputs();
+    renderCanvas();
+  }
+
   function defaultCanvasCursor() {
     return state.tool === "line" || state.tool === "note" ? "cell" : "crosshair";
   }
@@ -1429,11 +2170,13 @@
     state.renderedBuffer = null;
     state.renderedWav = null;
     state.dataVersion += 1;
+    invalidateCompositeLayerCache();
     const targetLayers = layers || ["draw", "bass", "score"];
     const canIncremental = !full
       && Boolean(state.renderCache)
       && rangeStartSec !== null
       && rangeEndSec !== null
+      && !layersRequireFullRender()
       && state.renderCache.totalSamples === totalRenderSamples()
       && state.renderCache.renderMode === state.renderMode
       && state.renderCache.noteBackend === state.noteBackend;
@@ -1505,7 +2248,8 @@
     const nextEvents = [];
     let changed = false;
 
-    for (const note of state.scoreEvents) {
+    const scoreEvents = currentRenderLayerState().scoreEvents;
+    for (const note of scoreEvents) {
       const noteRow = rowFromFreq(midiToFreq(note.midi));
       const noteStart = note.startSec;
       const noteEnd = note.startSec + note.durationSec;
@@ -1594,44 +2338,50 @@
     }
   }
 
+  function serializeLayerRecord(layer) {
+    return {
+      id: layer.id,
+      name: layer.name,
+      visible: layer.visible !== false,
+      layers: {
+        drawData: sparseLayerData(layer.drawData),
+        basslineData: sparseLayerData(layer.basslineData)
+      },
+      events: {
+        bassEvents: cloneEventList(layer.bassEvents || []),
+        scoreEvents: cloneEventList(layer.scoreEvents || [])
+      }
+    };
+  }
+
+  function deserializeLayerRecord(payload, fallbackName = `Layer ${nextLayerId}`) {
+    const layer = createEmptyLayer(typeof payload?.name === "string" ? payload.name : fallbackName);
+    if (payload && typeof payload.id === "string") {
+      layer.id = payload.id;
+    }
+    layer.visible = payload?.visible !== false;
+    restoreSparseLayerData(layer.drawData, payload?.layers?.drawData);
+    restoreSparseLayerData(layer.basslineData, payload?.layers?.basslineData);
+    layer.bassEvents = cloneEventList(Array.isArray(payload?.events?.bassEvents) ? payload.events.bassEvents : []);
+    layer.scoreEvents = cloneEventList(Array.isArray(payload?.events?.scoreEvents) ? payload.events.scoreEvents : []);
+    return layer;
+  }
+
   function buildSoundpaintProject() {
+    saveCurrentTabState();
     return {
       format: "soundpaint",
       version: SOUNDPAINT_PROJECT_VERSION,
       savedAt: new Date().toISOString(),
-      settings: {
-        durationSeconds: durationSeconds(),
-        gain: Number(gainInput.value),
-        brushSize: Number(sizeInput.value),
-        strength: Number(strengthInput.value),
-        density: Number(densityInput.value),
-        basslineBpm: basslineBpm(),
-        editorView: state.editorView,
-        renderMode: state.renderMode,
-        noteBackend: state.noteBackend,
-        frequencyAxis: frequencyAxisMode(),
-        showPhaseDiagnostics: state.showPhaseDiagnostics,
-        loopPlayback: state.loopPlayback,
-        currentBasslinePreset: state.currentBasslinePreset,
-        freeMinFreq: state.freeMinFreq,
-        freeMaxFreq: state.freeMaxFreq,
-        scoreViewFreqs: {
-          "guitar-score": { ...state.scoreViewFreqs["guitar-score"] },
-          "piano-score": { ...state.scoreViewFreqs["piano-score"] }
-        },
-        viewOffsetCol: state.viewOffsetCol,
-        viewColSpan: state.viewColSpan,
-        showGrid: Boolean(gridToggle && gridToggle.checked),
-        tool: state.tool
-      },
-      layers: {
-        drawData: sparseLayerData(drawData),
-        basslineData: sparseLayerData(basslineData)
-      },
-      events: {
-        bassEvents: cloneEventList(bassEvents),
-        scoreEvents: cloneEventList(state.scoreEvents)
-      }
+      currentTabId: state.currentTabId,
+      clipboardLayer: state.clipboardLayer ? serializeLayerRecord(state.clipboardLayer) : null,
+      tabs: state.tabs.map((tab) => ({
+        id: tab.id,
+        name: tab.name,
+        activeLayerId: tab.activeLayerId,
+        settings: JSON.parse(JSON.stringify(tab.settings)),
+        layers: tab.layers.map(serializeLayerRecord)
+      }))
     };
   }
 
@@ -1688,87 +2438,62 @@
     if (!project || project.format !== "soundpaint") {
       throw new Error("Not a valid soundpaint project file.");
     }
-    const settings = project.settings || {};
-    const layers = project.layers || {};
-    const events = project.events || {};
 
-    const nextDuration = clamp(
-      Number(settings.durationSeconds) || durationSeconds(),
-      Number(durationInput.min),
-      Number(durationInput.max)
-    );
-    durationInput.value = String(nextDuration);
-    gainInput.value = String(clamp(Number(settings.gain) || Number(gainInput.value), Number(gainInput.min), Number(gainInput.max)));
-    sizeInput.value = String(clamp(Number(settings.brushSize) || Number(sizeInput.value), Number(sizeInput.min), Number(sizeInput.max)));
-    strengthInput.value = String(clamp(Number(settings.strength) || Number(strengthInput.value), Number(strengthInput.min), Number(strengthInput.max)));
-    densityInput.value = String(clamp(Number(settings.density) || Number(densityInput.value), Number(densityInput.min), Number(densityInput.max)));
-    basslineBpmInput.value = String(clamp(Number(settings.basslineBpm) || basslineBpm(), Number(basslineBpmInput.min), Number(basslineBpmInput.max)));
-
-    state.editorView = settings.editorView in SCORE_VIEW_PROFILES || settings.editorView === "spectrogram"
-      ? settings.editorView
-      : "spectrogram";
-    state.renderMode = typeof settings.renderMode === "string" ? settings.renderMode : "geometry";
-    state.noteBackend = isValidNoteBackend(settings.noteBackend) ? settings.noteBackend : "procedural";
-    state.frequencyAxis = settings.frequencyAxis === "linear" ? "linear" : "log";
-    state.showPhaseDiagnostics = Boolean(settings.showPhaseDiagnostics);
-    state.loopPlayback = Boolean(settings.loopPlayback);
-    state.currentBasslinePreset = typeof settings.currentBasslinePreset === "string"
-      ? settings.currentBasslinePreset
-      : "none";
-    state.freeMinFreq = Number(settings.freeMinFreq) || state.freeMinFreq;
-    state.freeMaxFreq = Number(settings.freeMaxFreq) || state.freeMaxFreq;
-    if (settings.scoreViewFreqs && settings.scoreViewFreqs["guitar-score"]) {
-      state.scoreViewFreqs["guitar-score"] = {
-        min: Number(settings.scoreViewFreqs["guitar-score"].min) || state.scoreViewFreqs["guitar-score"].min,
-        max: Number(settings.scoreViewFreqs["guitar-score"].max) || state.scoreViewFreqs["guitar-score"].max
-      };
-    }
-    if (settings.scoreViewFreqs && settings.scoreViewFreqs["piano-score"]) {
-      state.scoreViewFreqs["piano-score"] = {
-        min: Number(settings.scoreViewFreqs["piano-score"].min) || state.scoreViewFreqs["piano-score"].min,
-        max: Number(settings.scoreViewFreqs["piano-score"].max) || state.scoreViewFreqs["piano-score"].max
-      };
+    if (Array.isArray(project.tabs) && project.tabs.length) {
+      state.tabs = project.tabs.map((tabPayload, index) => {
+        const layers = Array.isArray(tabPayload.layers) && tabPayload.layers.length
+          ? tabPayload.layers.map((layerPayload, layerIndex) => deserializeLayerRecord(layerPayload, `Layer ${layerIndex + 1}`))
+          : [createEmptyLayer("Layer 1")];
+        return {
+          id: typeof tabPayload.id === "string" ? tabPayload.id : `tab-${nextTabId++}`,
+          name: typeof tabPayload.name === "string" ? tabPayload.name : `Tab ${index + 1}`,
+          activeLayerId: typeof tabPayload.activeLayerId === "string" ? tabPayload.activeLayerId : layers[0].id,
+          settings: tabPayload.settings || buildTabSettingsFromCurrentState(),
+          layers
+        };
+      });
+      state.currentTabId = state.tabs.some((tab) => tab.id === project.currentTabId)
+        ? project.currentTabId
+        : state.tabs[0].id;
+      state.clipboardLayer = project.clipboardLayer
+        ? deserializeLayerRecord(project.clipboardLayer, project.clipboardLayer.name || "Clipboard layer")
+        : null;
+      refreshWorkspaceIdCounters();
+      const activeTab = currentTabRecord();
+      applyTabSettings(activeTab.settings || buildTabSettingsFromCurrentState());
+      bindActiveLayer(activeTab.layers.find((layer) => layer.id === activeTab.activeLayerId) || activeTab.layers[0]);
+      invalidateCompositeLayerCache();
+      resetUndoHistory();
+      updateWorkspaceUi();
+      updateOutputs();
+      markDirty({ resetFrequencyReference: false });
+      persistSessionProjectNow();
+      stopPlayback(options.statusMessage || "Project loaded from soundpaint.json.");
+      renderCanvas();
+      return;
     }
 
-    if (editorViewSelect) {
-      editorViewSelect.value = state.editorView;
-    }
-    if (renderModeSelect) {
-      renderModeSelect.value = state.renderMode;
-    }
-    if (noteBackendSelect) {
-      noteBackendSelect.value = state.noteBackend;
-    }
-    if (frequencyAxisSelect) {
-      frequencyAxisSelect.value = state.frequencyAxis;
-    }
-    if (gridToggle) {
-      gridToggle.checked = settings.showGrid !== false;
-    }
-
-    const loadedRange = state.editorView === "spectrogram"
-      ? { min: state.freeMinFreq, max: state.freeMaxFreq }
-      : state.scoreViewFreqs[state.editorView] || defaultFrequencyRangeForView(state.editorView);
-    const normalizedRange = sanitizeFrequencyRange(loadedRange.min, loadedRange.max);
-    minFreqInput.value = String(Math.round(normalizedRange.min));
-    maxFreqInput.value = String(Math.round(normalizedRange.max));
-    rememberCurrentFrequencyRange(normalizedRange.min, normalizedRange.max);
-    minFreqInput.disabled = false;
-    maxFreqInput.disabled = false;
-
-    restoreSparseLayerData(drawData, layers.drawData);
-    restoreSparseLayerData(basslineData, layers.basslineData);
-    bassEvents.length = 0;
-    bassEvents.push(...cloneEventList(Array.isArray(events.bassEvents) ? events.bassEvents : []));
-    state.scoreEvents = cloneEventList(Array.isArray(events.scoreEvents) ? events.scoreEvents : []);
-
-    state.viewColSpan = Number(settings.viewColSpan) || state.viewColSpan;
-    state.viewOffsetCol = Number(settings.viewOffsetCol) || 0;
-    clampViewSpan();
-    clampViewOffset();
-    state.frequencyZoomReference = null;
+    const legacyLayer = createEmptyLayer("Layer 1");
+    restoreSparseLayerData(legacyLayer.drawData, project.layers?.drawData);
+    restoreSparseLayerData(legacyLayer.basslineData, project.layers?.basslineData);
+    legacyLayer.bassEvents = cloneEventList(Array.isArray(project.events?.bassEvents) ? project.events.bassEvents : []);
+    legacyLayer.scoreEvents = cloneEventList(Array.isArray(project.events?.scoreEvents) ? project.events.scoreEvents : []);
+    const legacyTab = {
+      id: `tab-${nextTabId++}`,
+      name: "Tab 1",
+      activeLayerId: legacyLayer.id,
+      settings: project.settings || buildTabSettingsFromCurrentState(),
+      layers: [legacyLayer]
+    };
+    state.tabs = [legacyTab];
+    state.currentTabId = legacyTab.id;
+    state.clipboardLayer = null;
+    refreshWorkspaceIdCounters();
+    applyTabSettings(legacyTab.settings);
+    bindActiveLayer(legacyLayer);
+    invalidateCompositeLayerCache();
     resetUndoHistory();
-    setTool(typeof settings.tool === "string" ? settings.tool : "brush");
+    updateWorkspaceUi();
     updateOutputs();
     markDirty({ resetFrequencyReference: false });
     persistSessionProjectNow();
@@ -1937,11 +2662,25 @@
     if (phaseDiagnosticsToggle) {
       phaseDiagnosticsToggle.checked = state.showPhaseDiagnostics;
     }
-    if (playButton) {
-      playButton.classList.toggle("is-engaged", state.isPlaying && !state.isPaused);
+    if (drawingToolsToggle) {
+      drawingToolsToggle.checked = state.showDrawingTools;
     }
-    if (pauseButton) {
-      pauseButton.classList.toggle("is-engaged", state.isPaused);
+    if (surfaceToolbar) {
+      surfaceToolbar.classList.toggle("is-collapsed", !state.showDrawingTools);
+    }
+    if (playButton) {
+      const playActsAsPause = state.transportPending === "play" || (state.isPlaying && !state.isPaused);
+      playButton.classList.toggle("is-engaged", playActsAsPause);
+      playButton.setAttribute("aria-label", playActsAsPause ? "Pause" : "Play");
+      playButton.title = playActsAsPause ? "Pause" : "Play";
+      const icon = playButton.querySelector(".tool-icon");
+      if (icon) {
+        icon.innerHTML = playActsAsPause ? PAUSE_ICON_SVG : PLAY_ICON_SVG;
+      }
+      const label = playButton.querySelector(".sr-only");
+      if (label) {
+        label.textContent = playActsAsPause ? "Pause" : "Play";
+      }
     }
     if (renderButton) {
       renderButton.classList.toggle("is-engaged", Boolean(state.renderPromise));
@@ -2043,14 +2782,17 @@
   }
 
   function amplitudeAt(layer, col, row) {
-    if (col < 0 || row < 0 || col >= trackColCount() || row >= GRID_ROWS) {
+    const sampleCol = Math.round(col);
+    const sampleRow = Math.round(row);
+    if (sampleCol < 0 || sampleRow < 0 || sampleCol >= trackColCount() || sampleRow >= GRID_ROWS) {
       return 0;
     }
-    return layer[gridIndex(col, row)];
+    return layer[gridIndex(sampleCol, sampleRow)];
   }
 
   function combinedAmplitude(col, row) {
-    return clamp(amplitudeAt(drawData, col, row) + amplitudeAt(basslineData, col, row), 0, 1);
+    const composite = currentRenderLayerState();
+    return clamp(amplitudeAt(composite.drawData, col, row) + amplitudeAt(composite.basslineData, col, row), 0, 1);
   }
 
   function layeredColor(bassValue, drawValue) {
@@ -2069,10 +2811,11 @@
   }
 
   function hasImportedScoreOverlay() {
-    return state.scoreEvents.length > 0 && isScoreSheetMode();
+    return currentRenderLayerState().scoreEvents.length > 0 && isScoreSheetMode();
   }
 
   function repaintOffscreen() {
+    const composite = currentRenderLayerState();
     const pixels = pixelImage.data;
     const startCol = visibleStartCol();
     const span = Math.max(1, visibleColCount() - 1);
@@ -2084,10 +2827,10 @@
         const col0 = Math.floor(sourceCol);
         const col1 = Math.min(maxTrackCol, col0 + 1);
         const mix = sourceCol - col0;
-        const bass0 = amplitudeAt(basslineData, col0, row);
-        const bass1 = amplitudeAt(basslineData, col1, row);
-        const draw0 = amplitudeAt(drawData, col0, row);
-        const draw1 = amplitudeAt(drawData, col1, row);
+        const bass0 = amplitudeAt(composite.basslineData, col0, row);
+        const bass1 = amplitudeAt(composite.basslineData, col1, row);
+        const draw0 = amplitudeAt(composite.drawData, col0, row);
+        const draw1 = amplitudeAt(composite.drawData, col1, row);
         const bass = lerp(bass0, bass1, mix);
         const draw = lerp(draw0, draw1, mix);
         const [r, g, b, a] = layeredColor(bass, draw);
@@ -2325,6 +3068,7 @@
     if (!hasImportedScoreOverlay()) {
       return;
     }
+    const scoreEvents = currentRenderLayerState().scoreEvents;
 
     const startVisibleCol = visibleStartCol();
     const endVisibleCol = visibleEndCol();
@@ -2335,7 +3079,7 @@
     ctx.rect(margins.left, y0, plotWidth(), h);
     ctx.clip();
 
-    for (const note of state.scoreEvents) {
+    for (const note of scoreEvents) {
       const startCol = colFromTime(note.startSec);
       const endCol = Math.max(startCol + 1, colFromTime(note.startSec + note.durationSec));
       if (endCol < startVisibleCol || startCol > endVisibleCol) {
@@ -2514,9 +3258,12 @@
     if (!within) {
       return null;
     }
-    const viewCol = clamp(Math.round(((x - margins.left) / plotWidth()) * Math.max(1, visibleColCount() - 1)), 0, Math.max(0, visibleColCount() - 1));
+    // Keep pointer coordinates continuous for freehand drawing so tool behavior
+    // stays stable across zoom levels. Note snapping is applied separately only
+    // for the dedicated Note tool.
+    const viewCol = clamp(((x - margins.left) / plotWidth()) * Math.max(1, visibleColCount() - 1), 0, Math.max(0, visibleColCount() - 1));
     const col = clamp(visibleStartCol() + viewCol, 0, trackColCount() - 1);
-    const row = clamp(Math.round(((y - margins.top) / plotHeight()) * (GRID_ROWS - 1)), 0, GRID_ROWS - 1);
+    const row = clamp(((y - margins.top) / plotHeight()) * (GRID_ROWS - 1), 0, GRID_ROWS - 1);
     return { col, row };
   }
 
@@ -2811,11 +3558,16 @@
     }
     state.liveSampleGainNode = null;
     state.liveSampleScheduledUntilSec = 0;
+    state.liveSampleScoreEvents = [];
+    state.liveSampleRenderedWindows = new Set();
+    state.liveSampleRenderingWindows = new Set();
     state.liveSampleUsesProgressive = false;
     state.liveSampleSessionId += 1;
+    setSampleDebug(`stopped. scheduled ${state.sampleDebugScheduledCount}, started ${state.sampleDebugStartedCount}.`);
   }
 
   function stopPlayback(statusMessage) {
+    cancelPendingTransport();
     stopActiveSource();
     stopLiveSamplePlayback();
     state.isPlaying = false;
@@ -2836,6 +3588,10 @@
   }
 
   function pausePlayback() {
+    if (cancelPendingTransport("Playback start canceled.")) {
+      renderCanvas();
+      return;
+    }
     const playbackDuration = Math.max(0, state.playDurationSeconds || (state.renderedBuffer ? state.renderedBuffer.duration : 0));
     if (!state.isPlaying || !state.audioContext || playbackDuration <= 0) {
       return;
@@ -4210,7 +4966,11 @@
     const sharedOptions = {
       scheduler: options.scheduler || void 0,
       loader: options.loader || void 0,
-      destination: options.destination || void 0
+      destination: options.destination || void 0,
+      scheduleLookaheadMs: options.scheduleLookaheadMs || void 0,
+      scheduleIntervalMs: options.scheduleIntervalMs || void 0,
+      onLoadProgress: options.onLoadProgress || void 0,
+      onStart: options.onStart || void 0
     };
     if (definition.kind === "splendid-piano") {
       return module.SplendidGrandPiano(context, {
@@ -4277,11 +5037,10 @@
 
       if (windowNotes.length) {
         const renderedResult = await smplr.renderOffline(async (context) => {
-          // smplr instruments normally queue future notes through a scheduler.
-          // During OfflineAudioContext setup, currentTime does not advance yet, so
-          // a short default lookahead can schedule only the earliest notes. Give the
-          // offline scheduler a lookahead that spans the whole render window so all
-          // note starts are dispatched before startRendering().
+          // smplr instruments queue note starts through a scheduler. During
+          // OfflineAudioContext setup, currentTime does not advance yet, so the
+          // scheduler must see the whole render window up front or only the earliest
+          // note attacks will get dispatched.
           const scheduler = createSmplrOfflineScheduler(smplr, context, renderDurationSec);
           const instrument = await createSmplrInstrumentForContext(smplr, context, backend, { scheduler, loader });
           for (let i = 0; i < windowNotes.length; i += 1) {
@@ -5596,7 +6355,7 @@
       });
       await yieldToBrowser();
       try {
-        const renderResult = await buildPreviewBaseAudioData({
+        const renderResult = await withCompositeLayerState(() => buildPreviewBaseAudioData({
           onProgress: (progress, detail) => {
             setRenderOverlay(true, {
               title: "Preparing playback",
@@ -5604,7 +6363,7 @@
               progress
             });
           }
-        });
+        }));
         const audioContext = createAudioContext();
         const buffer = createBufferFromSamples(audioContext, renderResult.samples);
         state.previewBaseBuffer = buffer;
@@ -5689,31 +6448,35 @@
 
       try {
         const startedAt = performance.now();
-        const renderResult = await (state.dirtyRender.full ? buildAudioData({
-          onProgress: (progress, detail, progressText) => {
-            if (token !== state.renderToken) {
-              return;
-            }
-            setRenderOverlay(true, {
-              title: "Rendering audio",
-              detail,
-              progress,
-              progressText
-            });
-          }
-        }) : buildIncrementalAudioData({
-          onProgress: (progress, detail, progressText) => {
-            if (token !== state.renderToken) {
-              return;
-            }
-            setRenderOverlay(true, {
-              title: "Rendering audio",
-              detail,
-              progress,
-              progressText
-            });
-          }
-        }));
+        const renderResult = await withCompositeLayerState(() => (
+          state.dirtyRender.full || layersRequireFullRender()
+            ? buildAudioData({
+              onProgress: (progress, detail, progressText) => {
+                if (token !== state.renderToken) {
+                  return;
+                }
+                setRenderOverlay(true, {
+                  title: "Rendering audio",
+                  detail,
+                  progress,
+                  progressText
+                });
+              }
+            })
+            : buildIncrementalAudioData({
+              onProgress: (progress, detail, progressText) => {
+                if (token !== state.renderToken) {
+                  return;
+                }
+                setRenderOverlay(true, {
+                  title: "Rendering audio",
+                  detail,
+                  progress,
+                  progressText
+                });
+              }
+            })
+        ));
         const elapsedMs = performance.now() - startedAt;
         if (token !== state.renderToken) {
           return null;
@@ -5802,15 +6565,131 @@
     state.liveSampleStopFns.push(stopFn);
   }
 
+  function liveSampleWindowCount() {
+    return Math.max(1, Math.ceil(durationSeconds() / LIVE_SAMPLE_PLAY_WINDOW_SECONDS));
+  }
+
+  function liveSampleWindowBounds(windowIndex) {
+    const startSec = clamp(windowIndex * LIVE_SAMPLE_PLAY_WINDOW_SECONDS, 0, durationSeconds());
+    const endSec = clamp(startSec + LIVE_SAMPLE_PLAY_WINDOW_SECONDS, startSec, durationSeconds());
+    return { startSec, endSec };
+  }
+
+  function liveSampleWindowHasNotes(windowIndex) {
+    const { startSec, endSec } = liveSampleWindowBounds(windowIndex);
+    return state.liveSampleScoreEvents.some((note) => {
+      const noteStart = note.startSec;
+      const noteEnd = note.startSec + Math.max(0.02, note.durationSec) + SMPLR_RENDER_TAIL_SECONDS;
+      return noteEnd > startSec && noteStart < endSec;
+    });
+  }
+
+  async function ensureLiveSampleWindow(windowIndex, options = {}) {
+    if (!state.liveSampleUsesProgressive || !state.audioContext || !state.liveSampleGainNode) {
+      return;
+    }
+    if (windowIndex < 0 || windowIndex >= liveSampleWindowCount()) {
+      return;
+    }
+    const key = String(windowIndex);
+    if (state.liveSampleRenderedWindows.has(key) || state.liveSampleRenderingWindows.has(key)) {
+      return;
+    }
+    state.liveSampleRenderingWindows.add(key);
+    const sessionId = state.liveSampleSessionId;
+    try {
+      if (!liveSampleWindowHasNotes(windowIndex)) {
+        state.liveSampleRenderedWindows.add(key);
+        return;
+      }
+      const { startSec, endSec } = liveSampleWindowBounds(windowIndex);
+      const totalSamples = totalRenderSamples();
+      const startSample = clamp(Math.floor(startSec * RENDER_SAMPLE_RATE), 0, totalSamples);
+      const endSample = clamp(Math.ceil(endSec * RENDER_SAMPLE_RATE), startSample, totalSamples);
+      const rendered = await withCompositeLayerState(() => renderSmplrScoreEvents(totalSamples, state.noteBackend, {
+        rangeStartSample: startSample,
+        rangeEndSample: endSample
+      }));
+      if (
+        sessionId !== state.liveSampleSessionId
+        || !state.isPlaying
+        || !state.liveSampleUsesProgressive
+        || !state.audioContext
+        || !state.liveSampleGainNode
+      ) {
+        return;
+      }
+      const mixedWindow = rendered.samples.slice();
+      if (state.previewBaseBuffer) {
+        const previewChannel = state.previewBaseBuffer.getChannelData(0);
+        const copyLength = Math.min(mixedWindow.length, Math.max(0, previewChannel.length - startSample));
+        for (let i = 0; i < copyLength; i += 1) {
+          mixedWindow[i] += previewChannel[startSample + i];
+        }
+      }
+      const buffer = createBufferFromSamples(state.audioContext, mixedWindow);
+      const absoluteStartSec = startSec;
+      const nowAbs = Math.max(0, state.audioContext.currentTime - state.playStartedAt);
+      const offsetSec = options.initialPlaybackOffsetSec != null
+        ? Math.max(0, options.initialPlaybackOffsetSec - absoluteStartSec)
+        : Math.max(0, nowAbs - absoluteStartSec);
+      if (buffer.duration - offsetSec <= 0.02) {
+        state.liveSampleRenderedWindows.add(key);
+        return;
+      }
+      const source = state.audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(state.liveSampleGainNode);
+      const startAt = options.initialSourceStartAt != null
+        ? options.initialSourceStartAt
+        : Math.max(state.playStartedAt + absoluteStartSec, state.audioContext.currentTime + 0.01);
+      source.start(startAt, offsetSec);
+      scheduleLiveSampleStop(() => {
+        try {
+          source.stop();
+        } catch (error) {
+          // Ignore repeated stops on already-finished window sources.
+        }
+        try {
+          source.disconnect();
+        } catch (error) {
+          // Ignore repeated disconnects.
+        }
+      });
+      state.liveSampleRenderedWindows.add(key);
+    } finally {
+      state.liveSampleRenderingWindows.delete(key);
+    }
+  }
+
+  function scheduleLiveSampleWindows(forceInitial = false) {
+    if (!state.liveSampleUsesProgressive || !state.audioContext || !state.isPlaying) {
+      return;
+    }
+    const duration = Math.max(0.001, state.playDurationSeconds || durationSeconds());
+    const nowAbs = Math.max(0, state.audioContext.currentTime - state.playStartedAt);
+    const startAbs = forceInitial ? clamp(state.pausedOffsetSeconds, 0, duration) : nowAbs;
+    const targetAbs = Math.min(duration, startAbs + LIVE_SAMPLE_RENDER_AHEAD_SECONDS);
+    const startWindow = clamp(Math.floor(startAbs / LIVE_SAMPLE_PLAY_WINDOW_SECONDS), 0, Math.max(0, liveSampleWindowCount() - 1));
+    const endWindow = clamp(Math.floor(Math.max(0, targetAbs - 1e-6) / LIVE_SAMPLE_PLAY_WINDOW_SECONDS), startWindow, Math.max(0, liveSampleWindowCount() - 1));
+    for (let windowIndex = startWindow; windowIndex <= endWindow; windowIndex += 1) {
+      void ensureLiveSampleWindow(windowIndex);
+    }
+    state.liveSampleScheduledUntilSec = targetAbs;
+  }
+
   function scheduleLiveNoteEvent(note, startTime, duration) {
     if (!state.liveSampleInstrument || !state.audioContext || duration <= 0.02) {
       return;
     }
     const velocity = clamp(Math.round((note.velocity || 0.78) * 127), 1, 127);
+    const safeStartTime = Math.max(startTime, state.audioContext.currentTime + 0.02);
+    state.sampleDebugScheduledCount += 1;
+    setSampleDebug(`scheduled ${state.sampleDebugScheduledCount}, started ${state.sampleDebugStartedCount}, next midi ${note.midi} at ${safeStartTime.toFixed(2)}s.`);
     const stopFn = state.liveSampleInstrument.start({
       note: note.midi,
       velocity,
-      time: startTime,
+      time: safeStartTime,
       duration
     });
     scheduleLiveSampleStop(stopFn);
@@ -5826,6 +6705,7 @@
       ? nowAbs + LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS
       : Math.min(duration, nowAbs + LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS);
     const startAbs = Math.max(0, state.liveSampleScheduledUntilSec);
+    const upcomingNote = nextNoteStartSec(state.liveSampleScoreEvents, startAbs);
     if (!forceInitial && targetAbs <= startAbs + 1e-6) {
       return;
     }
@@ -5833,7 +6713,7 @@
     if (forceInitial) {
       const initialCycle = Math.floor(startAbs / duration);
       const initialWithin = state.loopPlayback ? startAbs - initialCycle * duration : startAbs;
-      for (const note of state.scoreEvents) {
+      for (const note of state.liveSampleScoreEvents) {
         const noteEnd = note.startSec + Math.max(0.02, note.durationSec);
         if (note.startSec < initialWithin && noteEnd > initialWithin) {
           scheduleLiveNoteEvent(
@@ -5850,7 +6730,7 @@
       const endCycle = Math.floor(Math.max(0, targetAbs - 1e-6) / duration);
       for (let cycle = startCycle; cycle <= endCycle; cycle += 1) {
         const cycleOffset = cycle * duration;
-        for (const note of state.scoreEvents) {
+        for (const note of state.liveSampleScoreEvents) {
           const eventAbs = cycleOffset + note.startSec;
           if (eventAbs >= startAbs && eventAbs < targetAbs) {
             scheduleLiveNoteEvent(note, state.playStartedAt + eventAbs, Math.max(0.02, note.durationSec));
@@ -5858,7 +6738,7 @@
         }
       }
     } else {
-      for (const note of state.scoreEvents) {
+      for (const note of state.liveSampleScoreEvents) {
         if (note.startSec >= startAbs && note.startSec < targetAbs) {
           scheduleLiveNoteEvent(note, state.playStartedAt + note.startSec, Math.max(0.02, note.durationSec));
         }
@@ -5866,25 +6746,44 @@
     }
 
     state.liveSampleScheduledUntilSec = targetAbs;
+    if (state.sampleDebugScheduledCount === 0 && upcomingNote != null && upcomingNote >= targetAbs) {
+      setSampleDebug(`no notes in lookahead yet. next note at ${upcomingNote.toFixed(2)}s. active ${state.scoreEvents.length} / composite ${state.liveSampleScoreEvents.length}.`);
+    }
   }
 
-  async function playAudioWithProgressiveSampleNotes(audioContext) {
-    const startOffset = state.pausedOffsetSeconds >= durationSeconds() - 0.01
-      ? 0
-      : clamp(state.pausedOffsetSeconds, 0, durationSeconds());
+  async function playAudioWithProgressiveSampleNotes(audioContext, requestId) {
+    const startOffset = state.isPaused && state.pausedOffsetSeconds < durationSeconds() - 0.01
+      ? clamp(state.pausedOffsetSeconds, 0, durationSeconds())
+      : 0;
+    const compositeScoreEvents = currentRenderLayerState().scoreEvents;
+    const progressiveScoreEvents = compositeScoreEvents.length
+      ? compositeScoreEvents
+      : cloneEventList(state.scoreEvents);
     const baseBuffer = await renderPreviewBaseIfNeeded("playback layers");
+    if (requestId !== state.transportRequestId || state.transportPending !== "play") {
+      return false;
+    }
     const smplr = await ensureSmplrModuleLoaded();
+    if (requestId !== state.transportRequestId || state.transportPending !== "play") {
+      return false;
+    }
     const loader = ensureSmplrSharedLoader(smplr);
-    const lookaheadScheduler = new smplr.Scheduler(audioContext, {
-      lookaheadMs: Math.ceil((LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS + 0.5) * 1000),
-      intervalMs: 120
-    });
     const liveSampleGainNode = audioContext.createGain();
     liveSampleGainNode.gain.value = 1;
     liveSampleGainNode.connect(state.gainNode);
+    resetSampleDebug(`loading ${noteBackendName(state.noteBackend).toLowerCase()} module for active ${state.scoreEvents.length} / composite ${compositeScoreEvents.length} notes...`);
     const instrument = createSmplrInstrumentInstance(smplr, audioContext, state.noteBackend, {
       loader,
-      scheduler: lookaheadScheduler,
+      scheduleLookaheadMs: Math.ceil((LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS + 0.5) * 1000),
+      scheduleIntervalMs: 120,
+      onLoadProgress: ({ loaded, total }) => {
+        setSampleDebug(`loading samples ${loaded}/${total || "?"}.`);
+      },
+      onStart: (event) => {
+        state.sampleDebugStartedCount += 1;
+        const noteLabel = event && (event.note ?? event.midi ?? event.pitch ?? "?");
+        setSampleDebug(`scheduled ${state.sampleDebugScheduledCount}, started ${state.sampleDebugStartedCount}. last start ${noteLabel}.`);
+      },
       destination: liveSampleGainNode
     });
     setRenderOverlay(true, {
@@ -5894,8 +6793,17 @@
     });
     try {
       await instrument.load;
+      setSampleDebug(`instrument loaded for active ${state.scoreEvents.length} / composite ${state.liveSampleScoreEvents.length} notes. scheduled ${state.sampleDebugScheduledCount}, started ${state.sampleDebugStartedCount}.`);
     } finally {
       setRenderOverlay(false);
+    }
+    if (requestId !== state.transportRequestId || state.transportPending !== "play") {
+      try {
+        instrument.stop();
+      } catch (error) {
+        // Ignore cancellation races while the instrument is still loading.
+      }
+      return false;
     }
 
     stopActiveSource();
@@ -5905,25 +6813,12 @@
       state.rafId = 0;
     }
 
-    if (baseBuffer) {
-      const source = audioContext.createBufferSource();
-      source.buffer = baseBuffer;
-      source.loop = state.loopPlayback;
-      source.connect(state.gainNode);
-      source.onended = () => {
-        if (state.sourceNode === source && !state.liveSampleUsesProgressive) {
-          stopPlayback("Playback finished.");
-        }
-      };
-      state.sourceNode = source;
-      source.start(0, startOffset);
-    }
-
     state.gainNode.gain.value = Number(gainInput.value);
     state.liveSampleInstrument = instrument;
-    state.liveSampleScheduler = lookaheadScheduler;
+    state.liveSampleScheduler = null;
     state.liveSampleGainNode = liveSampleGainNode;
     state.liveSampleStopFns = [];
+    state.liveSampleScoreEvents = progressiveScoreEvents;
     state.liveSampleUsesProgressive = true;
     state.liveSampleScheduledUntilSec = startOffset;
     state.isPlaying = true;
@@ -5934,29 +6829,49 @@
     state.lastPlaybackLoopIndex = Math.floor(startOffset / Math.max(0.001, state.playDurationSeconds));
     followPlaybackViewport({ allowBackward: true });
     scheduleLiveSampleNotes(true);
+    setSampleDebug(`playback started at ${startOffset.toFixed(2)}s for active ${state.scoreEvents.length} / composite ${state.liveSampleScoreEvents.length} notes. scheduled ${state.sampleDebugScheduledCount}, started ${state.sampleDebugStartedCount}.`);
     setStatus(`Playing ${noteBackendName(state.noteBackend).toLowerCase()} with progressive note scheduling.`);
     updateOutputs();
     renderCanvas();
     state.rafId = requestAnimationFrame(animatePlayhead);
+    return true;
   }
 
   async function playAudio() {
-    if (state.isPlaying && !state.isPaused) {
+    if (state.transportPending === "play" || (state.isPlaying && !state.isPaused)) {
       return;
     }
+    const requestId = ++state.transportRequestId;
+    state.transportPending = "play";
+    updateOutputs();
+    setStatus("Starting playback...");
     const audioContext = createAudioContext();
     await audioContext.resume();
+    if (requestId !== state.transportRequestId || state.transportPending !== "play") {
+      return;
+    }
     if (sampleNoteBackendSupportsProgressivePlay()) {
       try {
-        await playAudioWithProgressiveSampleNotes(audioContext);
-        return;
+        const started = await playAudioWithProgressiveSampleNotes(audioContext, requestId);
+        if (requestId === state.transportRequestId) {
+          state.transportPending = "";
+          updateOutputs();
+        }
+        if (started) {
+          return;
+        }
       } catch (error) {
         state.noteBackendWarning = `Progressive ${noteBackendName(state.noteBackend).toLowerCase()} playback fell back to offline rendering (${error && error.message ? error.message : String(error)}).`;
         setStatus(state.noteBackendWarning);
       }
     }
     const buffer = await renderIfNeeded("audio");
+    if (requestId !== state.transportRequestId || state.transportPending !== "play") {
+      return;
+    }
     if (!buffer) {
+      state.transportPending = "";
+      updateOutputs();
       return;
     }
     stopActiveSource();
@@ -5977,14 +6892,17 @@
     };
 
     state.sourceNode = source;
+    const startOffset = state.isPaused && state.pausedOffsetSeconds < buffer.duration - 0.01
+      ? clamp(state.pausedOffsetSeconds, 0, buffer.duration)
+      : 0;
     state.isPlaying = true;
     state.isPaused = false;
-    const startOffset = state.pausedOffsetSeconds >= buffer.duration - 0.01 ? 0 : clamp(state.pausedOffsetSeconds, 0, buffer.duration);
     state.playStartedAt = audioContext.currentTime - startOffset;
     state.playheadRatio = buffer.duration > 0 ? startOffset / buffer.duration : 0;
     state.lastPlaybackLoopIndex = 0;
     followPlaybackViewport({ allowBackward: true });
     source.start(0, startOffset);
+    state.transportPending = "";
     setStatus(state.loopPlayback ? "Playing rendered audio in loop mode." : "Playing rendered audio.");
     updateOutputs();
     renderCanvas();
@@ -6010,7 +6928,7 @@
     resetUndoHistory();
     markDirty();
     stopPlayback("Drawing layer cleared.");
-    renderCanvas();
+    resetViewportToEditorDefault();
   }
 
   function clearBassLine() {
@@ -6399,9 +7317,10 @@
     const targetDuration = clamp(Math.ceil(importedDuration * 4) / 4, Number(durationInput.min), maxDuration);
     const wasScaled = importedDuration > maxDuration;
     const scale = wasScaled ? targetDuration / importedDuration : 1;
+    const firstStartSec = firstNoteStartSec(parsedScore.notes) || 0;
     const scaledNotes = parsedScore.notes.map((note) => ({
       ...note,
-      startSec: note.startSec * scale,
+      startSec: Math.max(0, (note.startSec - firstStartSec) * scale),
       durationSec: Math.max(0.02, note.durationSec * scale)
     }));
     durationInput.value = String(targetDuration);
@@ -7028,6 +7947,24 @@
     }
   }
 
+  function closeOtherMenus(activeMenu) {
+    for (const menu of menuDropdowns) {
+      if (menu !== activeMenu) {
+        menu.removeAttribute("open");
+      }
+    }
+  }
+
+  function closeMenuForElement(element) {
+    if (!(element instanceof HTMLElement)) {
+      return;
+    }
+    const menu = element.closest(".menu-dropdown");
+    if (menu instanceof HTMLElement) {
+      menu.removeAttribute("open");
+    }
+  }
+
   function bindControls() {
     const redrawInputs = [
       durationInput,
@@ -7086,6 +8023,7 @@
 
     if (scoreImportButton && scoreImportInput) {
       scoreImportButton.addEventListener("click", () => {
+        closeMenuForElement(scoreImportButton);
         scoreImportInput.click();
       });
       scoreImportInput.addEventListener("change", async () => {
@@ -7106,10 +8044,14 @@
     }
 
     if (projectSaveButton) {
-      projectSaveButton.addEventListener("click", saveSoundpaintProject);
+      projectSaveButton.addEventListener("click", () => {
+        saveSoundpaintProject();
+        closeMenuForElement(projectSaveButton);
+      });
     }
     if (projectLoadButton && projectLoadInput) {
       projectLoadButton.addEventListener("click", () => {
+        closeMenuForElement(projectLoadButton);
         projectLoadInput.click();
       });
       projectLoadInput.addEventListener("change", async () => {
@@ -7127,6 +8069,15 @@
           projectLoadInput.value = "";
         }
       });
+    }
+    if (newTabButton) {
+      newTabButton.addEventListener("click", addNewTab);
+    }
+    if (newLayerButton) {
+      newLayerButton.addEventListener("click", addNewLayer);
+    }
+    if (pasteLayerButton) {
+      pasteLayerButton.addEventListener("click", pasteClipboardLayer);
     }
 
     basslineBpmInput.addEventListener("input", () => {
@@ -7217,14 +8168,30 @@
       });
     }
 
+    if (drawingToolsToggle) {
+      drawingToolsToggle.addEventListener("change", () => {
+        state.showDrawingTools = drawingToolsToggle.checked;
+        updateOutputs();
+        scheduleSessionProjectSave();
+      });
+    }
+
     gridToggle.addEventListener("change", () => {
       scheduleSessionProjectSave();
       renderCanvas();
     });
 
-    playButton.addEventListener("click", playAudio);
-    pauseButton.addEventListener("click", pausePlayback);
-    stopButton.addEventListener("click", () => stopPlayback("Playback stopped."));
+    playButton.addEventListener("click", () => {
+      if (state.transportPending === "play" || state.isPlaying) {
+        pausePlayback();
+      } else {
+        playAudio();
+      }
+    });
+    stopButton.addEventListener("click", () => {
+      stopPlayback("Playback stopped.");
+      resetViewportToEditorDefault();
+    });
     renderButton.addEventListener("click", () => renderIfNeeded("audio preview"));
     exportButton.addEventListener("click", exportWav);
     if (undoButton) {
@@ -7246,6 +8213,23 @@
         event.stopPropagation();
       });
     }
+
+    for (const menu of menuDropdowns) {
+      menu.addEventListener("toggle", () => {
+        if (menu.open) {
+          closeOtherMenus(menu);
+        }
+      });
+    }
+    document.addEventListener("pointerdown", (event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (!menuDropdowns.some((menu) => menu.contains(target))) {
+        closeOtherMenus(null);
+      }
+    });
 
     for (const button of toolButtons) {
       button.addEventListener("click", () => setTool(button.dataset.tool));
@@ -7276,6 +8260,15 @@
         setToolSettingsOpen(false);
         return;
       }
+      if (event.key === "F2") {
+        const target = event.target;
+        if (target && /input|select|textarea/i.test(target.tagName)) {
+          return;
+        }
+        event.preventDefault();
+        renameActiveLayer();
+        return;
+      }
       if (event.target && /input|select|textarea|button/i.test(event.target.tagName)) {
         return;
       }
@@ -7288,7 +8281,7 @@
 
       if (event.code === "Space") {
         event.preventDefault();
-        if (state.isPlaying) {
+        if (state.transportPending === "play" || state.isPlaying) {
           pausePlayback();
         } else {
           playAudio();
@@ -7356,6 +8349,11 @@
     applyEditorViewSettings();
     updateOutputs();
     bindControls();
+    const initialTab = createBlankTab("Tab 1");
+    state.tabs = [initialTab];
+    state.currentTabId = initialTab.id;
+    bindActiveLayer(initialTab.layers[0]);
+    updateWorkspaceUi();
     setTool("brush");
     if (!restoreSessionProjectIfAvailable()) {
       applyPreset("riser");
