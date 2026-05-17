@@ -468,94 +468,96 @@
                 <button id="new-tab-btn" type="button" class="tab-add-btn" title="Open a new editor tab" aria-label="Open a new editor tab">+</button>
               </div>
 
-              <div id="editor-resize-shell" class="editor-resize-shell">
-                <div class="canvas-frame">
-                  <div id="render-overlay" class="render-overlay" hidden aria-live="polite">
-                    <div class="render-overlay-card">
-                      <div class="render-overlay-head">
-                        <span class="render-spinner" aria-hidden="true"></span>
-                        <span id="render-overlay-title">Rendering audio</span>
+              <div class="editor-playback-stack">
+                <div id="editor-resize-shell" class="editor-resize-shell">
+                  <div class="canvas-frame">
+                    <div id="render-overlay" class="render-overlay" hidden aria-live="polite">
+                      <div class="render-overlay-card">
+                        <div class="render-overlay-head">
+                          <span class="render-spinner" aria-hidden="true"></span>
+                          <span id="render-overlay-title">Rendering audio</span>
+                        </div>
+                        <div id="render-overlay-detail" class="render-overlay-detail">Preparing synthesis</div>
+                        <div class="render-progress-track" aria-hidden="true">
+                          <div id="render-progress-bar" class="render-progress-bar"></div>
+                        </div>
+                        <div id="render-progress-text" class="render-progress-text">Working…</div>
                       </div>
-                      <div id="render-overlay-detail" class="render-overlay-detail">Preparing synthesis</div>
-                      <div class="render-progress-track" aria-hidden="true">
-                        <div id="render-progress-bar" class="render-progress-bar"></div>
-                      </div>
-                      <div id="render-progress-text" class="render-progress-text">Working…</div>
+                    </div>
+                    <canvas id="spectrogram-canvas" width="1120" height="640" aria-label="Spectrogram editor canvas"></canvas>
+                  </div>
+                </div>
+
+                <div class="timeline-bar" aria-label="Timeline viewport">
+                  <label class="timeline-label" for="timeline-track">
+                    <span>Timeline overview</span>
+                    <output id="timeline-out">0.00 s - 6.00 s</output>
+                  </label>
+                  <div id="timeline-track" class="timeline-track" role="scrollbar" aria-label="Timeline scrollbar" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0">
+                    <canvas id="timeline-overview" class="timeline-overview" width="1200" height="128" aria-hidden="true"></canvas>
+                    <div id="timeline-thumb" class="timeline-thumb">
+                      <span id="timeline-thumb-handle-left" class="timeline-thumb-handle is-left" aria-hidden="true"></span>
+                      <span id="timeline-thumb-handle-right" class="timeline-thumb-handle is-right" aria-hidden="true"></span>
                     </div>
                   </div>
-                  <canvas id="spectrogram-canvas" width="1120" height="640" aria-label="Spectrogram editor canvas"></canvas>
                 </div>
-              </div>
 
-              <div class="editor-dock">
-                <div class="transport-cluster" role="toolbar" aria-label="Transport controls">
-                  <button id="play-btn" type="button" class="action-btn transport-btn primary-btn" aria-label="Play" title="Play">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24"><path d="M8 6.5v11l9-5.5z" fill="currentColor" stroke="none"/></svg>
-                    </span>
-                    <span class="sr-only">Play</span>
-                  </button>
-                  <button id="stop-btn" type="button" class="action-btn transport-btn" aria-label="Stop" title="Stop">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.4" fill="currentColor" stroke="none"/></svg>
-                    </span>
-                    <span class="sr-only">Stop</span>
-                  </button>
-                  <button id="loop-btn" type="button" class="action-btn transport-btn" aria-label="Loop playback" aria-pressed="false" title="Loop playback">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24">
-                        <path d="M9 16H5v4"/>
-                        <path d="M5 16c1.9 2.5 4.6 4 8 4 4.9 0 8-3.3 8-8s-3.1-8-8-8c-3 0-5.3 1-7.1 3"/>
-                      </svg>
-                    </span>
-                    <span class="sr-only">Loop playback</span>
-                  </button>
-                  <button id="render-btn" type="button" class="action-btn transport-btn" aria-label="Render audio" title="Render audio">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24"><path d="M4 13c2.2 0 2.2-4 4.4-4s2.2 8 4.4 8 2.2-10 4.4-10 2.2 6 2.2 6"/></svg>
-                    </span>
-                    <span class="sr-only">Render</span>
-                  </button>
-                </div>
-                <div class="utility-cluster" role="toolbar" aria-label="Editor actions">
-                  <button id="export-btn" type="button" class="action-btn transport-btn" aria-label="Export WAV" title="Export WAV">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24"><path d="M12 4v10"/><path d="M8.5 10.5L12 14l3.5-3.5"/><path d="M5 18h14"/></svg>
-                    </span>
-                    <span class="sr-only">Export WAV</span>
-                  </button>
-                  <button id="undo-btn" type="button" class="action-btn transport-btn" aria-label="Undo" title="Undo">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24"><path d="M9 8H5v-4"/><path d="M5 8c1.9-2.5 4.6-4 8-4 4.9 0 8 3.3 8 8s-3.1 8-8 8c-3 0-5.3-1-7.1-3"/></svg>
-                    </span>
-                    <span class="sr-only">Undo</span>
-                  </button>
-                  <button id="clear-btn" type="button" class="action-btn transport-btn danger-btn" aria-label="Clear editor" title="Clear editor">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24"><path d="M6 7h12"/><path d="M9 7V5.5h6V7"/><path d="M8 7l.7 10.2a1.4 1.4 0 001.4 1.3h3.8a1.4 1.4 0 001.4-1.3L16 7"/><path d="M10 10.2v5.2M14 10.2v5.2"/></svg>
-                    </span>
-                    <span class="sr-only">Clear</span>
-                  </button>
-                </div>
-              </div>
-
-              <div class="status-bar">
-                <span id="status-text">Ready. Press Play to render and listen.</span>
-                <span id="cursor-readout">t = 0.00 s | f = 440 Hz | a = 0.00</span>
-                <span id="sample-debug-text" class="status-debug-pill" hidden>Sample debug: idle.</span>
-              </div>
-
-              <div class="timeline-bar" aria-label="Timeline viewport">
-                <label class="timeline-label" for="timeline-track">
-                  <span>Timeline overview</span>
-                  <output id="timeline-out">0.00 s - 6.00 s</output>
-                </label>
-                <div id="timeline-track" class="timeline-track" role="scrollbar" aria-label="Timeline scrollbar" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0">
-                  <canvas id="timeline-overview" class="timeline-overview" width="1200" height="128" aria-hidden="true"></canvas>
-                  <div id="timeline-thumb" class="timeline-thumb">
-                    <span id="timeline-thumb-handle-left" class="timeline-thumb-handle is-left" aria-hidden="true"></span>
-                    <span id="timeline-thumb-handle-right" class="timeline-thumb-handle is-right" aria-hidden="true"></span>
+                <div class="editor-dock">
+                  <div class="transport-cluster" role="toolbar" aria-label="Transport controls">
+                    <button id="play-btn" type="button" class="action-btn transport-btn primary-btn" aria-label="Play" title="Play">
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M8 6.5v11l9-5.5z" fill="currentColor" stroke="none"/></svg>
+                      </span>
+                      <span class="sr-only">Play</span>
+                    </button>
+                    <button id="stop-btn" type="button" class="action-btn transport-btn" aria-label="Stop" title="Stop">
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.4" fill="currentColor" stroke="none"/></svg>
+                      </span>
+                      <span class="sr-only">Stop</span>
+                    </button>
+                    <button id="loop-btn" type="button" class="action-btn transport-btn" aria-label="Loop playback" aria-pressed="false" title="Loop playback">
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <path d="M9 16H5v4"/>
+                          <path d="M5 16c1.9 2.5 4.6 4 8 4 4.9 0 8-3.3 8-8s-3.1-8-8-8c-3 0-5.3 1-7.1 3"/>
+                        </svg>
+                      </span>
+                      <span class="sr-only">Loop playback</span>
+                    </button>
+                    <button id="render-btn" type="button" class="action-btn transport-btn" aria-label="Render audio" title="Render audio">
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M4 13c2.2 0 2.2-4 4.4-4s2.2 8 4.4 8 2.2-10 4.4-10 2.2 6 2.2 6"/></svg>
+                      </span>
+                      <span class="sr-only">Render</span>
+                    </button>
                   </div>
+                  <div class="utility-cluster" role="toolbar" aria-label="Editor actions">
+                    <button id="export-btn" type="button" class="action-btn transport-btn" aria-label="Export WAV" title="Export WAV">
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M12 4v10"/><path d="M8.5 10.5L12 14l3.5-3.5"/><path d="M5 18h14"/></svg>
+                      </span>
+                      <span class="sr-only">Export WAV</span>
+                    </button>
+                    <button id="undo-btn" type="button" class="action-btn transport-btn" aria-label="Undo" title="Undo">
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M9 8H5v-4"/><path d="M5 8c1.9-2.5 4.6-4 8-4 4.9 0 8 3.3 8 8s-3.1 8-8 8c-3 0-5.3-1-7.1-3"/></svg>
+                      </span>
+                      <span class="sr-only">Undo</span>
+                    </button>
+                    <button id="clear-btn" type="button" class="action-btn transport-btn danger-btn" aria-label="Clear editor" title="Clear editor">
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M6 7h12"/><path d="M9 7V5.5h6V7"/><path d="M8 7l.7 10.2a1.4 1.4 0 001.4 1.3h3.8a1.4 1.4 0 001.4-1.3L16 7"/><path d="M10 10.2v5.2M14 10.2v5.2"/></svg>
+                      </span>
+                      <span class="sr-only">Clear</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="status-bar">
+                  <span id="status-text">Ready. Press Play to render and listen.</span>
+                  <span id="cursor-readout">t = 0.00 s | f = 440 Hz | a = 0.00</span>
+                  <span id="sample-debug-text" class="status-debug-pill" hidden>Sample debug: idle.</span>
                 </div>
               </div>
                 </div>
