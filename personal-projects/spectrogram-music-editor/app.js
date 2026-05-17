@@ -235,10 +235,15 @@
       linePreview: null,
       pointerId: null,
       selectedScoreIndices: [],
+      rasterSelection: null,
       selectionRectStart: null,
       selectionRectCurrent: null,
       selectionAdditive: false,
       selectionClickHit: null,
+      scoreRepeatMode: false,
+      scoreRepeatCountText: "1",
+      scoreRepeatCountEdited: false,
+      scoreRepeatSpacingBeats: 0,
       notePreviewLengthBeats: 2,
       noteDurationUnlocked: false,
       noteUnlockCol: null,
@@ -247,6 +252,7 @@
       scoreEditOriginalNote: null,
       scoreEditSelectionIndices: [],
       scoreEditOriginalSelectionNotes: null,
+      scoreCtrlPendingHit: null,
       scoreEditStartPoint: null,
       scoreEditStartMidi: null,
       dirty: true,
@@ -317,11 +323,17 @@
       transportPending: "",
       transportRequestId: 0,
       undoStack: [],
+      redoStack: [],
       pendingUndoSnapshot: null,
       pendingUndoVersion: -1,
       toolSettingsOpen: false,
       frequencyZoomReference: null,
       clipboardLayer: null,
+      rasterEditMode: null,
+      rasterEditOriginalSelection: null,
+      rasterEditOriginalRegion: null,
+      rasterEditOriginalDrawData: null,
+      rasterEditOriginalBasslineData: null,
       noteClipboard: null,
       tabs: [],
       currentTabId: null,
@@ -399,6 +411,9 @@
 
   function formatScoreLengthBeats(beats) {
     const rounded = Number(beats.toFixed(6));
+    if (Math.abs(rounded) < 1e-6) {
+      return "0";
+    }
     if (rounded >= 1 && Math.abs(rounded - Math.round(rounded)) < 1e-6) {
       return String(Math.round(rounded));
     }
@@ -436,6 +451,37 @@
     }
     index = clamp(index + stepDirection, 0, allowed.length - 1);
     return setNotePreviewLengthBeats(allowed[index]);
+  }
+
+  function scoreRepeatSpacingOptionsBeats() {
+    return [0, ...scoreAllowedNoteLengthsBeats()];
+  }
+
+  function currentScoreRepeatSpacingBeats() {
+    const options = scoreRepeatSpacingOptionsBeats();
+    let current = Number.isFinite(state.scoreRepeatSpacingBeats) ? state.scoreRepeatSpacingBeats : 0;
+    if (!options.some((beats) => Math.abs(beats - current) < 1e-6)) {
+      current = options.reduce((best, candidate) => (
+        Math.abs(candidate - current) < Math.abs(best - current) ? candidate : best
+      ), options[0] ?? 0);
+    }
+    state.scoreRepeatSpacingBeats = current;
+    return current;
+  }
+
+  function stepScoreRepeatSpacing(stepDirection) {
+    const options = scoreRepeatSpacingOptionsBeats();
+    if (!options.length) {
+      return 0;
+    }
+    const current = currentScoreRepeatSpacingBeats();
+    let index = options.findIndex((beats) => Math.abs(beats - current) < 1e-6);
+    if (index < 0) {
+      index = 0;
+    }
+    index = clamp(index + stepDirection, 0, options.length - 1);
+    state.scoreRepeatSpacingBeats = options[index];
+    return state.scoreRepeatSpacingBeats;
   }
 
   function scoreNoteDragActivationBeats() {
@@ -820,6 +866,42 @@
 
   function dirtyRangeFromPoints(from, to = from, paddingCols = brushRadiusCells() * 1.4) {
     return dirtyRangeFromColumns(from.col, to.col, paddingCols);
+  }
+
+  function dirtyRangeFromRect(bounds, paddingCols = 2) {
+    return dirtyRangeFromColumns(bounds.startCol, bounds.endCol + 1, paddingCols);
+  }
+
+  function normalizeGridRect(fromPoint, toPoint) {
+    if (!fromPoint || !toPoint) {
+      return null;
+    }
+    const maxCol = Math.max(0, trackColCount() - 1);
+    return {
+      startCol: clamp(Math.floor(Math.min(fromPoint.col, toPoint.col)), 0, maxCol),
+      endCol: clamp(Math.floor(Math.max(fromPoint.col, toPoint.col)), 0, maxCol),
+      startRow: clamp(Math.floor(Math.min(fromPoint.row, toPoint.row)), 0, GRID_ROWS - 1),
+      endRow: clamp(Math.floor(Math.max(fromPoint.row, toPoint.row)), 0, GRID_ROWS - 1)
+    };
+  }
+
+  function rectWidth(bounds) {
+    return bounds ? Math.max(0, bounds.endCol - bounds.startCol + 1) : 0;
+  }
+
+  function rectHeight(bounds) {
+    return bounds ? Math.max(0, bounds.endRow - bounds.startRow + 1) : 0;
+  }
+
+  function rectContainsPoint(bounds, point) {
+    return Boolean(
+      bounds
+      && point
+      && point.col >= bounds.startCol
+      && point.col <= bounds.endCol
+      && point.row >= bounds.startRow
+      && point.row <= bounds.endRow
+    );
   }
 
   function sampleRangeToColumnRange(totalSamples, startSample, endSample, paddingCols = 3) {
@@ -2317,6 +2399,16 @@
 
   function clearScoreSelection() {
     state.selectedScoreIndices = [];
+    resetScoreRepeatMode();
+  }
+
+  function clearRasterSelection() {
+    state.rasterSelection = null;
+  }
+
+  function clearEditorSelection() {
+    clearScoreSelection();
+    clearRasterSelection();
   }
 
   function setSelectedScoreIndices(indices) {
@@ -2339,6 +2431,86 @@
     return normalizeSelectedScoreIndices().map((index) => state.scoreEvents[index]).filter(Boolean);
   }
 
+  function rasterSelectionHasEnergy(bounds = state.rasterSelection) {
+    if (!bounds) {
+      return false;
+    }
+    for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
+      for (let col = bounds.startCol; col <= bounds.endCol; col += 1) {
+        const index = gridIndex(col, row);
+        if (drawData[index] > EPSILON || basslineData[index] > EPSILON) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function captureRasterRegion(bounds) {
+    if (!bounds) {
+      return null;
+    }
+    const width = rectWidth(bounds);
+    const height = rectHeight(bounds);
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+    const draw = new Float32Array(width * height);
+    const bass = new Float32Array(width * height);
+    for (let row = 0; row < height; row += 1) {
+      for (let col = 0; col < width; col += 1) {
+        const sourceIndex = gridIndex(bounds.startCol + col, bounds.startRow + row);
+        const targetIndex = row * width + col;
+        draw[targetIndex] = drawData[sourceIndex];
+        bass[targetIndex] = basslineData[sourceIndex];
+      }
+    }
+    return {
+      bounds: { ...bounds },
+      width,
+      height,
+      draw,
+      bass
+    };
+  }
+
+  function clearRasterRegion(bounds) {
+    if (!bounds) {
+      return;
+    }
+    for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
+      for (let col = bounds.startCol; col <= bounds.endCol; col += 1) {
+        const index = gridIndex(col, row);
+        drawData[index] = 0;
+        basslineData[index] = 0;
+      }
+    }
+  }
+
+  function applyRasterRegionAt(region, startCol, startRow) {
+    if (!region) {
+      return null;
+    }
+    const maxStartCol = Math.max(0, trackColCount() - region.width);
+    const maxStartRow = Math.max(0, GRID_ROWS - region.height);
+    const clampedStartCol = clamp(Math.round(startCol), 0, maxStartCol);
+    const clampedStartRow = clamp(Math.round(startRow), 0, maxStartRow);
+    for (let row = 0; row < region.height; row += 1) {
+      for (let col = 0; col < region.width; col += 1) {
+        const sourceIndex = row * region.width + col;
+        const targetIndex = gridIndex(clampedStartCol + col, clampedStartRow + row);
+        drawData[targetIndex] = Math.max(drawData[targetIndex], region.draw[sourceIndex]);
+        basslineData[targetIndex] = Math.max(basslineData[targetIndex], region.bass[sourceIndex]);
+      }
+    }
+    return {
+      startCol: clampedStartCol,
+      endCol: clampedStartCol + region.width - 1,
+      startRow: clampedStartRow,
+      endRow: clampedStartRow + region.height - 1
+    };
+  }
+
   function scoreNotesSpan(notes) {
     if (!notes || !notes.length) {
       return null;
@@ -2353,6 +2525,117 @@
     return Number.isFinite(startSec) && Number.isFinite(endSec)
       ? { startSec, endSec }
       : null;
+  }
+
+  function currentScoreRepeatCount() {
+    const raw = String(state.scoreRepeatCountText || "").trim();
+    if (!raw.length) {
+      return 1;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
+  }
+
+  function scoreRepeatStatusText() {
+    const count = currentScoreRepeatCount();
+    const spacing = currentScoreRepeatSpacingBeats();
+    const countLabel = count === 0 ? "infinite" : String(count);
+    return `Repeat mode: count ${countLabel}, spacing ${formatScoreLengthBeats(spacing)} note. Press R to commit, Escape to cancel.`;
+  }
+
+  function resetScoreRepeatMode() {
+    state.scoreRepeatMode = false;
+    state.scoreRepeatCountText = "1";
+    state.scoreRepeatCountEdited = false;
+    state.scoreRepeatSpacingBeats = 0;
+  }
+
+  function enterScoreRepeatMode() {
+    if (!normalizeSelectedScoreIndices().length) {
+      return false;
+    }
+    state.scoreRepeatMode = true;
+    state.scoreRepeatCountText = "1";
+    state.scoreRepeatCountEdited = false;
+    state.scoreRepeatSpacingBeats = 0;
+    setStatus(scoreRepeatStatusText());
+    renderCanvas();
+    return true;
+  }
+
+  function repeatedScoreNotesPreview(baseNotes, count, spacingBeats) {
+    const notes = (baseNotes || []).map((note) => ({ ...note })).sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
+    if (!notes.length) {
+      return [];
+    }
+    const span = scoreNotesSpan(notes);
+    if (!span) {
+      return [];
+    }
+    const patternStart = Math.min(...notes.map((note) => note.startSec));
+    const patternEnd = Math.max(...notes.map((note) => note.startSec + note.durationSec));
+    const patternDuration = Math.max(0.001, patternEnd - patternStart);
+    const stepSec = patternDuration + spacingBeats * scoreBeatSeconds();
+    if (stepSec <= 0) {
+      return [];
+    }
+    const trackDuration = durationSeconds();
+    const copies = [];
+    const maxCopies = count === 0 ? 2048 : count;
+    for (let repeatIndex = 1; repeatIndex <= maxCopies; repeatIndex += 1) {
+      const offsetSec = repeatIndex * stepSec;
+      if (patternEnd + offsetSec > trackDuration + 1e-6) {
+        break;
+      }
+      for (const note of notes) {
+        copies.push({
+          ...note,
+          startSec: note.startSec + offsetSec
+        });
+      }
+    }
+    return copies;
+  }
+
+  function commitScoreRepeatSelection() {
+    const selectedNotes = selectedScoreNotes();
+    if (!selectedNotes.length) {
+      resetScoreRepeatMode();
+      renderCanvas();
+      return false;
+    }
+    const copies = repeatedScoreNotesPreview(
+      selectedNotes,
+      currentScoreRepeatCount(),
+      currentScoreRepeatSpacingBeats()
+    );
+    if (!copies.length) {
+      setStatus("Repeat mode produced no additional notes within the track.");
+      resetScoreRepeatMode();
+      clearScoreSelection();
+      renderCanvas();
+      return false;
+    }
+    beginUndoGesture();
+    state.scoreEvents = mergeAdjacentNoteEvents([
+      ...state.scoreEvents,
+      ...copies
+    ]);
+    const span = scoreNotesSpan(copies);
+    if (span) {
+      markDirty({
+        full: false,
+        layers: ["score"],
+        rangeStartSec: span.startSec,
+        rangeEndSec: span.endSec
+      });
+    }
+    commitUndoGesture();
+    resetScoreRepeatMode();
+    clearScoreSelection();
+    setStatus(`Repeated selection ${copies.length / Math.max(1, selectedNotes.length)} time${copies.length === selectedNotes.length ? "" : "s"}.`);
+    renderCanvas();
+    return true;
   }
 
   function deleteScoreNotesByIndices(indices) {
@@ -2489,6 +2772,20 @@
     };
   }
 
+  function duplicateScoreSelection(indices) {
+    const normalized = Array.from(new Set((indices || []).filter((index) => Number.isInteger(index) && index >= 0 && index < state.scoreEvents.length))).sort((a, b) => a - b);
+    if (!normalized.length) {
+      return null;
+    }
+    const duplicates = normalized.map((index) => ({ ...state.scoreEvents[index] }));
+    const startIndex = state.scoreEvents.length;
+    state.scoreEvents = [...state.scoreEvents, ...duplicates];
+    return {
+      indices: duplicates.map((_, offset) => startIndex + offset),
+      notes: duplicates.map((note) => ({ ...note }))
+    };
+  }
+
   function scoreNotePasteTargetPoint() {
     const snappedPointer = snapPointToScoreMidi(state.currentPointer);
     if (snappedPointer) {
@@ -2506,52 +2803,88 @@
   }
 
   function pasteScoreNoteFromClipboard() {
-    if (!state.noteClipboard || !Array.isArray(state.noteClipboard.notes) || !state.noteClipboard.notes.length || !isScoreSheetMode()) {
+    if (!state.noteClipboard || (!Array.isArray(state.noteClipboard.notes) && !state.noteClipboard.raster)) {
       return false;
     }
-    const targetPoint = scoreNotePasteTargetPoint();
-    const sources = state.noteClipboard.notes.slice().sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
-    const sourceStart = Math.min(...sources.map((note) => note.startSec));
-    const sourceEnd = Math.max(...sources.map((note) => note.startSec + note.durationSec));
-    const sourceMinMidi = Math.min(...sources.map((note) => note.midi));
-    const sourceMaxMidi = Math.max(...sources.map((note) => note.midi));
-    const trackDuration = durationSeconds();
-    const profile = currentScoreProfile();
-    const desiredStart = targetPoint ? timeFromCol(targetPoint.col) : sourceStart;
-    const startDelta = clamp(
-      desiredStart - sourceStart,
-      -sourceStart,
-      trackDuration - sourceEnd
-    );
-    const desiredMidi = targetPoint && Number.isFinite(targetPoint.midi) ? targetPoint.midi : sourceMinMidi;
-    const midiDelta = clamp(
-      desiredMidi - sourceMinMidi,
-      profile.minMidi - sourceMinMidi,
-      profile.maxMidi - sourceMaxMidi
-    );
-    const pastedNotes = sources.map((source) => ({
-      ...source,
-      startSec: source.startSec + startDelta,
-      midi: source.midi + midiDelta
-    }));
     beginUndoGesture();
-    state.scoreEvents = mergeAdjacentNoteEvents([
-      ...state.scoreEvents,
-      ...pastedNotes
-    ]);
-    const spanStart = Math.min(...pastedNotes.map((note) => noteRenderSpan(note).startSec));
-    const spanEnd = Math.max(...pastedNotes.map((note) => noteRenderSpan(note).endSec));
-    markDirty({
-      full: false,
-      layers: ["score"],
-      rangeStartSec: spanStart,
-      rangeEndSec: spanEnd
-    });
+    let dirtyStartSec = Infinity;
+    let dirtyEndSec = -Infinity;
+    const dirtyLayers = new Set();
+    let pastedNoteCount = 0;
+    let pastedRaster = false;
+
+    if (Array.isArray(state.noteClipboard.notes) && state.noteClipboard.notes.length && isScoreSheetMode()) {
+      const targetPoint = scoreNotePasteTargetPoint();
+      const sources = state.noteClipboard.notes.slice().sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
+      const sourceStart = Math.min(...sources.map((note) => note.startSec));
+      const sourceEnd = Math.max(...sources.map((note) => note.startSec + note.durationSec));
+      const sourceMinMidi = Math.min(...sources.map((note) => note.midi));
+      const sourceMaxMidi = Math.max(...sources.map((note) => note.midi));
+      const trackDuration = durationSeconds();
+      const profile = currentScoreProfile();
+      const desiredStart = targetPoint ? timeFromCol(targetPoint.col) : sourceStart;
+      const startDelta = clamp(
+        desiredStart - sourceStart,
+        -sourceStart,
+        trackDuration - sourceEnd
+      );
+      const desiredMidi = targetPoint && Number.isFinite(targetPoint.midi) ? targetPoint.midi : sourceMinMidi;
+      const midiDelta = clamp(
+        desiredMidi - sourceMinMidi,
+        profile.minMidi - sourceMinMidi,
+        profile.maxMidi - sourceMaxMidi
+      );
+      const pastedNotes = sources.map((source) => ({
+        ...source,
+        startSec: source.startSec + startDelta,
+        midi: source.midi + midiDelta
+      }));
+      state.scoreEvents = mergeAdjacentNoteEvents([
+        ...state.scoreEvents,
+        ...pastedNotes
+      ]);
+      dirtyStartSec = Math.min(dirtyStartSec, Math.min(...pastedNotes.map((note) => noteRenderSpan(note).startSec)));
+      dirtyEndSec = Math.max(dirtyEndSec, Math.max(...pastedNotes.map((note) => noteRenderSpan(note).endSec)));
+      dirtyLayers.add("score");
+      pastedNoteCount = pastedNotes.length;
+    }
+
+    if (state.noteClipboard.raster) {
+      const region = state.noteClipboard.raster;
+      const targetPoint = state.currentPointer || {
+        col: playheadColumn(),
+        row: region.bounds.startRow
+      };
+      const appliedBounds = applyRasterRegionAt(region, targetPoint.col, targetPoint.row);
+      if (appliedBounds) {
+        state.rasterSelection = appliedBounds;
+        const dirtyRange = dirtyRangeFromRect(appliedBounds);
+        dirtyStartSec = Math.min(dirtyStartSec, dirtyRange.startSec);
+        dirtyEndSec = Math.max(dirtyEndSec, dirtyRange.endSec);
+        dirtyLayers.add("draw");
+        dirtyLayers.add("bass");
+        pastedRaster = true;
+      }
+    }
+
+    if (dirtyLayers.size) {
+      markDirty({
+        full: false,
+        layers: Array.from(dirtyLayers),
+        rangeStartSec: dirtyStartSec,
+        rangeEndSec: dirtyEndSec
+      });
+    }
     commitUndoGesture();
-    clearScoreSelection();
-    setStatus(`Pasted ${pastedNotes.length} note${pastedNotes.length === 1 ? "" : "s"} at ${(sourceStart + startDelta).toFixed(2)} s.`);
+    if (pastedNoteCount && !pastedRaster) {
+      clearScoreSelection();
+    }
+    const noteText = pastedNoteCount ? `${pastedNoteCount} note${pastedNoteCount === 1 ? "" : "s"}` : "";
+    const rasterText = pastedRaster ? "selection" : "";
+    const joiner = pastedNoteCount && pastedRaster ? " and " : "";
+    setStatus(`Pasted ${noteText}${joiner}${rasterText}.`);
     renderCanvas();
-    return true;
+    return dirtyLayers.size > 0;
   }
 
   function applyScoreNoteEdit(point) {
@@ -2682,6 +3015,14 @@
       return;
     }
     if (state.tool === "select") {
+      if (state.rasterEditMode === "move") {
+        canvas.style.cursor = "grabbing";
+        return;
+      }
+      if (state.rasterSelection && rectContainsPoint(state.rasterSelection, point)) {
+        canvas.style.cursor = "grab";
+        return;
+      }
       const hit = hitTestScoreNote(point);
       if (hit) {
         canvas.style.cursor = "pointer";
@@ -3092,12 +3433,14 @@
 
   function resetUndoHistory() {
     state.undoStack = [];
+    state.redoStack = [];
     state.pendingUndoSnapshot = null;
     state.pendingUndoVersion = -1;
     updateUndoButton();
   }
 
   function beginUndoGesture() {
+    state.redoStack = [];
     state.pendingUndoSnapshot = captureEditorSnapshot();
     state.pendingUndoVersion = state.dataVersion;
   }
@@ -3133,6 +3476,7 @@
       return;
     }
     stopHoldLoop();
+    state.redoStack.push(captureEditorSnapshot());
     const snapshot = state.undoStack.pop();
     restoreEditorSnapshot(snapshot);
     state.pointerId = null;
@@ -3143,6 +3487,29 @@
     state.drawing = false;
     updateOutputs();
     stopPlayback("Undid the last drawing gesture.");
+    updateUndoButton();
+  }
+
+  function redoLastGesture() {
+    if (state.drawing || state.isScrubbingPlayhead) {
+      return;
+    }
+    if (!state.redoStack.length) {
+      setStatus("Nothing to redo.");
+      return;
+    }
+    stopHoldLoop();
+    state.undoStack.push(captureEditorSnapshot());
+    const snapshot = state.redoStack.pop();
+    restoreEditorSnapshot(snapshot);
+    state.pointerId = null;
+    state.lastPointer = null;
+    state.currentPointer = null;
+    state.lineStart = null;
+    state.linePreview = null;
+    state.drawing = false;
+    updateOutputs();
+    stopPlayback("Redid the last gesture.");
     updateUndoButton();
   }
 
@@ -3720,6 +4087,8 @@
       || !state.pointerInside
       || !state.currentPointer
       || !isScoreSheetMode()
+      || state.scoreEditMode
+      || hitTestScoreNote(state.currentPointer)
     ) {
       return;
     }
@@ -3835,8 +4204,73 @@
     ctx.restore();
   }
 
+  function drawRasterSelectionOverlay() {
+    if (!state.rasterSelection) {
+      return;
+    }
+    const from = gridToCanvas(state.rasterSelection.startCol, state.rasterSelection.startRow);
+    const to = gridToCanvas(state.rasterSelection.endCol + 1, state.rasterSelection.endRow + 1);
+    const x = Math.min(from.x, to.x);
+    const y = Math.min(from.y, to.y);
+    const width = Math.max(2, Math.abs(to.x - from.x));
+    const height = Math.max(2, Math.abs(to.y - from.y));
+    ctx.save();
+    ctx.fillStyle = "rgba(255, 226, 122, 0.08)";
+    ctx.strokeStyle = "rgba(255, 226, 122, 0.98)";
+    ctx.setLineDash([7, 5]);
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, width - 1), Math.max(1, height - 1));
+    ctx.restore();
+  }
+
+  function drawScoreRepeatPreview() {
+    if (!state.scoreRepeatMode) {
+      return;
+    }
+    const previewNotes = repeatedScoreNotesPreview(
+      selectedScoreNotes(),
+      currentScoreRepeatCount(),
+      currentScoreRepeatSpacingBeats()
+    );
+    if (!previewNotes.length || !isScoreSheetMode()) {
+      return;
+    }
+    const x0 = margins.left;
+    const y0 = margins.top;
+    const w = plotWidth();
+    const h = plotHeight();
+    const startVisibleCol = visibleStartCol();
+    const endVisibleCol = visibleEndCol();
+    ctx.save();
+    ctx.rect(x0, y0, w, h);
+    ctx.clip();
+    ctx.setLineDash([6, 5]);
+    for (const note of previewNotes) {
+      const geometry = scoreNoteGeometry(note);
+      if (geometry.endCol < startVisibleCol || geometry.startCol > endVisibleCol) {
+        continue;
+      }
+      const clampedStart = Math.max(startVisibleCol, geometry.startCol);
+      const clampedEnd = Math.min(endVisibleCol, geometry.endCol);
+      const x1 = margins.left + ((clampedStart - startVisibleCol) / Math.max(1, visibleColCount() - 1)) * plotWidth();
+      const x2 = margins.left + ((clampedEnd - startVisibleCol) / Math.max(1, visibleColCount() - 1)) * plotWidth();
+      const width = Math.max(2, x2 - x1);
+      const topY = y0 + (geometry.minRow / (GRID_ROWS - 1)) * h;
+      const bottomY = y0 + (geometry.maxRow / (GRID_ROWS - 1)) * h;
+      const rectHeight = Math.max(5, bottomY - topY);
+      const rectY = (topY + bottomY) * 0.5 - rectHeight * 0.5;
+      ctx.fillStyle = "rgba(160, 236, 255, 0.12)";
+      ctx.strokeStyle = "rgba(160, 236, 255, 0.72)";
+      ctx.lineWidth = 1.15;
+      ctx.fillRect(x1, rectY, width, rectHeight);
+      ctx.strokeRect(x1 + 0.5, rectY + 0.5, Math.max(1, width - 1), Math.max(1, rectHeight - 1));
+    }
+    ctx.restore();
+  }
+
   function drawScoreSelectionMarquee() {
-    if (state.tool !== "select" || !state.selectionRectStart || !state.selectionRectCurrent) {
+    if (!state.selectionRectStart || !state.selectionRectCurrent) {
       return;
     }
     const from = gridToCanvas(state.selectionRectStart.col, state.selectionRectStart.row);
@@ -4037,7 +4471,9 @@
     drawGridAndAxes();
     drawBassEventOverlay();
     drawImportedScoreOverlay();
+    drawRasterSelectionOverlay();
     drawSelectedScoreOverlay();
+    drawScoreRepeatPreview();
     drawPhaseDiagnosticsOverlay(diagnostics);
     drawPlayhead();
     drawNoteGhostPreview();
@@ -4174,6 +4610,214 @@
       }
     }
     return false;
+  }
+
+  function copyCurrentSelectionToClipboard() {
+    const selectedNotes = selectedScoreNotes();
+    const rasterRegion = state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection)
+      ? captureRasterRegion(state.rasterSelection)
+      : null;
+    if (!selectedNotes.length && !rasterRegion) {
+      const scoreHit = currentEditableScoreHit();
+      if (!scoreHit || !copyScoreNoteToClipboard(scoreHit.note)) {
+        return false;
+      }
+      return true;
+    }
+    state.noteClipboard = {
+      notes: selectedNotes
+        .map((note) => ({ ...note }))
+        .sort((a, b) => a.startSec - b.startSec || a.midi - b.midi),
+      raster: rasterRegion
+    };
+    return true;
+  }
+
+  function deleteCurrentSelection() {
+    const selectedNotes = selectedScoreNotes();
+    const rasterBounds = state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection)
+      ? { ...state.rasterSelection }
+      : null;
+    if (!selectedNotes.length && !rasterBounds) {
+      const scoreHit = currentEditableScoreHit();
+      if (!scoreHit) {
+        return false;
+      }
+      beginUndoGesture();
+      const removedSpan = deleteScoreNotesByIndices([scoreHit.index]);
+      if (removedSpan) {
+        markDirty({
+          full: false,
+          layers: ["score"],
+          rangeStartSec: removedSpan.startSec,
+          rangeEndSec: removedSpan.endSec
+        });
+      }
+      commitUndoGesture();
+      setStatus(`Deleted note at ${scoreHit.note.startSec.toFixed(2)} s.`);
+      renderCanvas();
+      return true;
+    }
+    beginUndoGesture();
+    let dirtyStartSec = Infinity;
+    let dirtyEndSec = -Infinity;
+    const dirtyLayers = new Set();
+    if (selectedNotes.length) {
+      const removedSpan = deleteScoreNotesByIndices(normalizeSelectedScoreIndices());
+      if (removedSpan) {
+        dirtyStartSec = Math.min(dirtyStartSec, removedSpan.startSec);
+        dirtyEndSec = Math.max(dirtyEndSec, removedSpan.endSec);
+        dirtyLayers.add("score");
+      }
+    }
+    if (rasterBounds) {
+      clearRasterRegion(rasterBounds);
+      clearRasterSelection();
+      const dirtyRange = dirtyRangeFromRect(rasterBounds);
+      dirtyStartSec = Math.min(dirtyStartSec, dirtyRange.startSec);
+      dirtyEndSec = Math.max(dirtyEndSec, dirtyRange.endSec);
+      dirtyLayers.add("draw");
+      dirtyLayers.add("bass");
+    }
+    if (dirtyLayers.size) {
+      markDirty({
+        full: false,
+        layers: Array.from(dirtyLayers),
+        rangeStartSec: dirtyStartSec,
+        rangeEndSec: dirtyEndSec
+      });
+    }
+    commitUndoGesture();
+    setStatus("Deleted selection.");
+    renderCanvas();
+    return true;
+  }
+
+  function beginRasterSelectionMove(point) {
+    if (!state.rasterSelection) {
+      return false;
+    }
+    beginUndoGesture();
+    state.pointerId = null;
+    state.drawing = true;
+    state.lastPointer = point;
+    state.currentPointer = point;
+    state.pointerInside = true;
+    state.rasterEditMode = "move";
+    state.rasterEditOriginalSelection = { ...state.rasterSelection };
+    state.rasterEditOriginalRegion = captureRasterRegion(state.rasterSelection);
+    state.rasterEditOriginalDrawData = drawData.slice();
+    state.rasterEditOriginalBasslineData = basslineData.slice();
+    state.scoreEditStartPoint = point;
+    return true;
+  }
+
+  function applyRasterSelectionMove(point, duplicate = false) {
+    if (!point || !state.rasterEditOriginalSelection || !state.rasterEditOriginalRegion || !state.scoreEditStartPoint) {
+      return false;
+    }
+    const original = state.rasterEditOriginalSelection;
+    const region = state.rasterEditOriginalRegion;
+    const deltaCols = Math.round(point.col - state.scoreEditStartPoint.col);
+    const deltaRows = Math.round(point.row - state.scoreEditStartPoint.row);
+    const nextStartCol = clamp(original.startCol + deltaCols, 0, Math.max(0, trackColCount() - region.width));
+    const nextStartRow = clamp(original.startRow + deltaRows, 0, Math.max(0, GRID_ROWS - region.height));
+    drawData.set(state.rasterEditOriginalDrawData);
+    basslineData.set(state.rasterEditOriginalBasslineData);
+    if (!duplicate) {
+      clearRasterRegion(original);
+    }
+    const appliedBounds = applyRasterRegionAt(region, nextStartCol, nextStartRow);
+    if (!appliedBounds) {
+      return false;
+    }
+    state.rasterSelection = appliedBounds;
+    return (
+      appliedBounds.startCol !== original.startCol
+      || appliedBounds.startRow !== original.startRow
+      || duplicate
+    );
+  }
+
+  function duplicateCurrentSelectionRight() {
+    const selectedNotes = selectedScoreNotes();
+    const rasterRegion = state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection)
+      ? captureRasterRegion(state.rasterSelection)
+      : null;
+    if (!selectedNotes.length && !rasterRegion) {
+      const scoreHit = currentEditableScoreHit();
+      if (scoreHit) {
+        beginUndoGesture();
+        const duplicate = {
+          ...scoreHit.note,
+          startSec: clamp(
+            scoreHit.note.startSec + scoreHit.note.durationSec,
+            0,
+            Math.max(0, durationSeconds() - scoreHit.note.durationSec)
+          )
+        };
+        state.scoreEvents = mergeAdjacentNoteEvents([...state.scoreEvents, duplicate]);
+        const span = noteRenderSpan(duplicate);
+        markDirty({
+          full: false,
+          layers: ["score"],
+          rangeStartSec: span.startSec,
+          rangeEndSec: span.endSec
+        });
+        commitUndoGesture();
+        setStatus("Duplicated note.");
+        renderCanvas();
+        return true;
+      }
+      return false;
+    }
+    beginUndoGesture();
+    let dirtyStartSec = Infinity;
+    let dirtyEndSec = -Infinity;
+    const dirtyLayers = new Set();
+    if (selectedNotes.length) {
+      const startSec = Math.min(...selectedNotes.map((note) => note.startSec));
+      const endSec = Math.max(...selectedNotes.map((note) => note.startSec + note.durationSec));
+      const deltaSec = endSec - startSec;
+      const duplicates = selectedNotes.map((note) => ({
+        ...note,
+        startSec: clamp(note.startSec + deltaSec, 0, Math.max(0, durationSeconds() - note.durationSec))
+      }));
+      state.scoreEvents = mergeAdjacentNoteEvents([...state.scoreEvents, ...duplicates]);
+      const span = scoreNotesSpan(duplicates);
+      if (span) {
+        dirtyStartSec = Math.min(dirtyStartSec, span.startSec);
+        dirtyEndSec = Math.max(dirtyEndSec, span.endSec);
+        dirtyLayers.add("score");
+      }
+    }
+    if (rasterRegion) {
+      const nextBounds = applyRasterRegionAt(
+        rasterRegion,
+        state.rasterSelection.endCol + 1,
+        state.rasterSelection.startRow
+      );
+      if (nextBounds) {
+        state.rasterSelection = nextBounds;
+        const dirtyRange = dirtyRangeFromRect(nextBounds);
+        dirtyStartSec = Math.min(dirtyStartSec, dirtyRange.startSec);
+        dirtyEndSec = Math.max(dirtyEndSec, dirtyRange.endSec);
+        dirtyLayers.add("draw");
+        dirtyLayers.add("bass");
+      }
+    }
+    if (dirtyLayers.size) {
+      markDirty({
+        full: false,
+        layers: Array.from(dirtyLayers),
+        rangeStartSec: dirtyStartSec,
+        rangeEndSec: dirtyEndSec
+      });
+    }
+    commitUndoGesture();
+    setStatus("Duplicated selection.");
+    renderCanvas();
+    return dirtyLayers.size > 0;
   }
 
   function removeBassEventsNearPoint(point) {
@@ -7779,6 +8423,19 @@
     resetViewportToEditorDefault();
   }
 
+  function confirmAndClearSpectrogram() {
+    const confirmed = window.confirm(
+      "Clear the drawing layer?\n\nThis is a non-recoverable erase. Press Enter to confirm."
+    );
+    if (!confirmed) {
+      setStatus("Clear cancelled.");
+      renderCanvas();
+      return false;
+    }
+    clearSpectrogram();
+    return true;
+  }
+
   function clearBassLine() {
     basslineData.fill(0);
     bassEvents.length = 0;
@@ -7792,6 +8449,9 @@
   function setTool(tool) {
     if ((tool === "note" || tool === "select") && !isScoreNoteToolAvailable()) {
       tool = "pointer";
+    }
+    if (tool !== "select" && state.scoreRepeatMode) {
+      resetScoreRepeatMode();
     }
     state.tool = tool;
     scheduleSessionProjectSave();
@@ -8696,8 +9356,37 @@
       stopPlayback("Playback stopped for editing.");
     }
 
-    if (state.tool === "select" && isScoreSheetMode()) {
+    if (state.tool === "select") {
       const scoreHit = hitTestScoreNote(point);
+      if ((event.ctrlKey || event.metaKey) && scoreHit) {
+        state.pointerId = event.pointerId;
+        state.drawing = true;
+        state.lastPointer = point;
+        state.currentPointer = point;
+        state.pointerInside = true;
+        state.scoreCtrlPendingHit = {
+          point,
+          index: scoreHit.index,
+          sourceSelectionIndices: normalizeSelectedScoreIndices().includes(scoreHit.index)
+            ? normalizeSelectedScoreIndices().slice()
+            : [scoreHit.index]
+        };
+        updateCursorReadout(point);
+        canvas.setPointerCapture(event.pointerId);
+        updateCanvasCursor(point);
+        renderCanvas();
+        return;
+      }
+      if (state.tool === "select" && state.rasterSelection && rectContainsPoint(state.rasterSelection, point) && !scoreHit && !(event.ctrlKey || event.metaKey)) {
+        if (beginRasterSelectionMove(point)) {
+          state.pointerId = event.pointerId;
+          canvas.setPointerCapture(event.pointerId);
+          updateCursorReadout(point);
+          updateCanvasCursor(point);
+          renderCanvas();
+          return;
+        }
+      }
       if (!(event.ctrlKey || event.metaKey) && scoreHit) {
         const selected = normalizeSelectedScoreIndices();
         const targetSelection = selected.includes(scoreHit.index) ? selected : [scoreHit.index];
@@ -8719,6 +9408,9 @@
         renderCanvas();
         return;
       }
+      if (!(event.ctrlKey || event.metaKey)) {
+        clearEditorSelection();
+      }
       state.pointerId = event.pointerId;
       state.drawing = true;
       state.lastPointer = point;
@@ -8738,32 +9430,52 @@
     if (state.tool === "note") {
       const scoreHit = hitTestScoreNote(point);
       if (scoreHit) {
-        beginUndoGesture();
         state.pointerId = event.pointerId;
         state.drawing = true;
         state.lastPointer = scorePoint || point;
         state.currentPointer = scorePoint || point;
         state.pointerInside = true;
         if (event.ctrlKey || event.metaKey) {
-          copyScoreNoteToClipboard(scoreHit.note);
-          const duplicate = duplicateScoreNoteEvent(scoreHit.note);
-          if (!duplicate) {
-            cancelUndoGesture();
-            return;
-          }
-          state.scoreEditMode = "move";
-          state.scoreEditIndex = duplicate.index;
-          state.scoreEditOriginalNote = { ...duplicate.note };
+          state.scoreCtrlPendingHit = {
+            point,
+            index: scoreHit.index,
+            sourceSelectionIndices: normalizeSelectedScoreIndices().includes(scoreHit.index)
+              ? normalizeSelectedScoreIndices().slice()
+              : [scoreHit.index]
+          };
+        } else if (normalizeSelectedScoreIndices().length > 1 && normalizeSelectedScoreIndices().includes(scoreHit.index)) {
+          beginUndoGesture();
+          state.scoreEditMode = "move-selection";
+          state.scoreEditSelectionIndices = normalizeSelectedScoreIndices().slice();
+          state.scoreEditOriginalSelectionNotes = state.scoreEditSelectionIndices.map((index) => ({ ...state.scoreEvents[index] }));
+          state.scoreEditStartPoint = point;
+          state.scoreEditStartMidi = nearestScoreMidiForPoint(point);
         } else {
+          beginUndoGesture();
           state.scoreEditMode = scoreHit.mode;
           state.scoreEditIndex = scoreHit.index;
           state.scoreEditOriginalNote = { ...scoreHit.note };
+          state.scoreEditStartPoint = point;
+          state.scoreEditStartMidi = nearestScoreMidiForPoint(point);
         }
-        state.scoreEditStartPoint = point;
-        state.scoreEditStartMidi = nearestScoreMidiForPoint(point);
         updateCursorReadout(scorePoint || point);
         canvas.setPointerCapture(event.pointerId);
         updateCanvasCursor(scorePoint || point);
+        renderCanvas();
+        return;
+      } else if ((event.ctrlKey || event.metaKey)) {
+        state.pointerId = event.pointerId;
+        state.drawing = true;
+        state.lastPointer = point;
+        state.currentPointer = point;
+        state.pointerInside = true;
+        state.selectionRectStart = point;
+        state.selectionRectCurrent = point;
+        state.selectionAdditive = true;
+        state.selectionClickHit = null;
+        updateCursorReadout(point);
+        canvas.setPointerCapture(event.pointerId);
+        updateCanvasCursor(point);
         renderCanvas();
         return;
       }
@@ -8818,8 +9530,67 @@
       setPlayheadFromColumn(point.col);
       setStatus(timelinePositionStatus());
     } else if (state.drawing && state.pointerId === event.pointerId) {
-      if (state.tool === "select" && state.selectionRectStart) {
+      if (state.scoreCtrlPendingHit) {
+        const pending = state.scoreCtrlPendingHit;
+        const dx = Math.abs(point.col - pending.point.col);
+        const dy = Math.abs(point.row - pending.point.row);
+        const dragThresholdCols = Math.max(1.5, (8 / plotWidth()) * visibleColCount());
+        if (dx > dragThresholdCols || dy > 1.6) {
+          beginUndoGesture();
+          if (pending.sourceSelectionIndices.length > 1) {
+            const duplicate = duplicateScoreSelection(pending.sourceSelectionIndices);
+            if (duplicate) {
+              setSelectedScoreIndices(duplicate.indices);
+              state.scoreEditMode = "move-selection";
+              state.scoreEditSelectionIndices = duplicate.indices.slice();
+              state.scoreEditOriginalSelectionNotes = duplicate.notes.map((note) => ({ ...note }));
+            }
+          } else {
+            const sourceNote = state.scoreEvents[pending.index];
+            if (sourceNote) {
+              copyScoreNoteToClipboard(sourceNote);
+              const duplicate = duplicateScoreNoteEvent(sourceNote);
+              if (duplicate) {
+                state.scoreEditMode = "move";
+                state.scoreEditIndex = duplicate.index;
+                state.scoreEditOriginalNote = { ...duplicate.note };
+              }
+            }
+          }
+          state.scoreEditStartPoint = pending.point;
+          state.scoreEditStartMidi = nearestScoreMidiForPoint(pending.point);
+          state.scoreCtrlPendingHit = null;
+          if (state.scoreEditMode && applyScoreNoteEdit(point)) {
+            if (state.scoreEditMode === "move-selection") {
+              const originalSpan = scoreNotesSpan(state.scoreEditOriginalSelectionNotes || []);
+              const currentSpan = scoreNotesSpan(
+                (state.scoreEditSelectionIndices || []).map((index) => state.scoreEvents[index]).filter(Boolean)
+              );
+              if (originalSpan && currentSpan) {
+                markDirty({
+                  full: false,
+                  layers: ["score"],
+                  rangeStartSec: Math.min(originalSpan.startSec, currentSpan.startSec),
+                  rangeEndSec: Math.max(originalSpan.endSec, currentSpan.endSec)
+                });
+              }
+            } else if (state.scoreEditOriginalNote) {
+              const currentNote = state.scoreEvents[state.scoreEditIndex];
+              const originalSpan = noteRenderSpan(state.scoreEditOriginalNote);
+              const currentSpan = noteRenderSpan(currentNote);
+              markDirty({
+                full: false,
+                layers: ["score"],
+                rangeStartSec: Math.min(originalSpan.startSec, currentSpan.startSec),
+                rangeEndSec: Math.max(originalSpan.endSec, currentSpan.endSec)
+              });
+            }
+          }
+        }
+      } else if (state.selectionRectStart) {
         state.selectionRectCurrent = point;
+      } else if (state.rasterEditMode === "move") {
+        applyRasterSelectionMove(point, false);
       } else if (state.scoreEditMode) {
         const originalNote = state.scoreEditOriginalNote;
         if (applyScoreNoteEdit(point)) {
@@ -8883,7 +9654,13 @@
       return;
     }
 
-    if (state.tool === "select" && state.selectionRectStart) {
+    if (state.scoreCtrlPendingHit) {
+      toggleSelectedScoreIndex(state.scoreCtrlPendingHit.index);
+      const selectionCount = normalizeSelectedScoreIndices().length;
+      setStatus(selectionCount
+        ? `Selected ${selectionCount} note${selectionCount === 1 ? "" : "s"}.`
+        : "No notes selected.");
+    } else if (state.selectionRectStart) {
       const dx = Math.abs((state.selectionRectCurrent || state.selectionRectStart).col - state.selectionRectStart.col);
       const dy = Math.abs((state.selectionRectCurrent || state.selectionRectStart).row - state.selectionRectStart.row);
       const isClick = dx < Math.max(1.5, (8 / plotWidth()) * visibleColCount()) && dy < 1.6;
@@ -8895,9 +9672,13 @@
             setSelectedScoreIndices([state.selectionClickHit.index]);
           }
         } else if (!state.selectionAdditive) {
-          clearScoreSelection();
+          clearEditorSelection();
         }
       } else {
+        const rect = normalizeGridRect(
+          state.selectionRectStart,
+          state.selectionRectCurrent || state.selectionRectStart
+        );
         const selection = scoreNoteIndicesWithinSelectionRect(
           state.selectionRectStart,
           state.selectionRectCurrent || state.selectionRectStart
@@ -8907,11 +9688,33 @@
         } else {
           setSelectedScoreIndices(selection);
         }
+        if (rect && rasterSelectionHasEnergy(rect)) {
+          state.rasterSelection = rect;
+        } else if (!state.selectionAdditive) {
+          clearRasterSelection();
+        }
       }
       const selectionCount = normalizeSelectedScoreIndices().length;
-      setStatus(selectionCount
-        ? `Selected ${selectionCount} note${selectionCount === 1 ? "" : "s"}.`
-        : "No notes selected.");
+      const hasRaster = Boolean(state.rasterSelection);
+      setStatus(
+        selectionCount || hasRaster
+          ? `Selected ${selectionCount} note${selectionCount === 1 ? "" : "s"}${selectionCount && hasRaster ? " and " : ""}${hasRaster ? "a freehand region" : ""}.`
+          : "No content selected."
+      );
+    } else if (state.rasterEditMode === "move") {
+      const originalBounds = state.rasterEditOriginalSelection;
+      const currentBounds = state.rasterSelection;
+      if (originalBounds && currentBounds) {
+        const originalRange = dirtyRangeFromRect(originalBounds);
+        const currentRange = dirtyRangeFromRect(currentBounds);
+        markDirty({
+          full: false,
+          layers: ["draw", "bass"],
+          rangeStartSec: Math.min(originalRange.startSec, currentRange.startSec),
+          rangeEndSec: Math.max(originalRange.endSec, currentRange.endSec)
+        });
+      }
+      setStatus("Moved freehand selection.");
     } else if (state.scoreEditMode === "move-selection") {
       clearScoreSelection();
       state.scoreEvents = mergeAdjacentNoteEvents(state.scoreEvents);
@@ -8949,6 +9752,12 @@
     state.selectionRectCurrent = null;
     state.selectionAdditive = false;
     state.selectionClickHit = null;
+    state.scoreCtrlPendingHit = null;
+    state.rasterEditMode = null;
+    state.rasterEditOriginalSelection = null;
+    state.rasterEditOriginalRegion = null;
+    state.rasterEditOriginalDrawData = null;
+    state.rasterEditOriginalBasslineData = null;
     state.noteDurationUnlocked = false;
     state.noteUnlockCol = null;
     state.scoreEditMode = null;
@@ -8977,6 +9786,12 @@
       return;
     }
     event.preventDefault();
+    if (state.scoreRepeatMode && state.tool === "select" && normalizeSelectedScoreIndices().length) {
+      const spacing = stepScoreRepeatSpacing(event.deltaY < 0 ? -1 : 1);
+      setStatus(scoreRepeatStatusText());
+      renderCanvas();
+      return;
+    }
     if (event.shiftKey && state.tool === "note" && isScoreSheetMode()) {
       const nextLength = stepNotePreviewLength(event.deltaY < 0 ? -1 : 1);
       if (nextLength !== null) {
@@ -9429,7 +10244,7 @@
     if (undoButton) {
       undoButton.addEventListener("click", undoLastGesture);
     }
-    clearButton.addEventListener("click", clearSpectrogram);
+    clearButton.addEventListener("click", confirmAndClearSpectrogram);
     presetButton.addEventListener("click", () => applyPreset(presetSelect.value));
     if (basslineButton && basslineSelect) {
       basslineButton.addEventListener("click", () => applyBassLinePreset(basslineSelect.value));
@@ -9494,6 +10309,42 @@
         setToolSettingsOpen(false);
         return;
       }
+      if (state.scoreRepeatMode) {
+        const target = event.target;
+        if (!(target && /input|select|textarea/i.test(target.tagName))) {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            resetScoreRepeatMode();
+            setStatus("Repeat mode cancelled.");
+            renderCanvas();
+            return;
+          }
+          if (event.key.toLowerCase() === "r") {
+            event.preventDefault();
+            commitScoreRepeatSelection();
+            return;
+          }
+          if (/^[0-9]$/.test(event.key)) {
+            event.preventDefault();
+            state.scoreRepeatCountText = state.scoreRepeatCountEdited
+              ? `${state.scoreRepeatCountText}${event.key}`
+              : event.key;
+            state.scoreRepeatCountEdited = true;
+            setStatus(scoreRepeatStatusText());
+            renderCanvas();
+            return;
+          }
+          if (event.key === "Backspace") {
+            event.preventDefault();
+            const nextText = String(state.scoreRepeatCountText || "").slice(0, -1);
+            state.scoreRepeatCountText = nextText || "1";
+            state.scoreRepeatCountEdited = nextText.length > 0;
+            setStatus(scoreRepeatStatusText());
+            renderCanvas();
+            return;
+          }
+        }
+      }
       if (event.key === "F2") {
         const target = event.target;
         if (target && /input|select|textarea/i.test(target.tagName)) {
@@ -9507,6 +10358,12 @@
         return;
       }
 
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z" && event.shiftKey) {
+        event.preventDefault();
+        redoLastGesture();
+        return;
+      }
+
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
         undoLastGesture();
@@ -9514,25 +10371,28 @@
       }
 
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "c") {
-        const selectedNotes = selectedScoreNotes();
-        if (selectedNotes.length && copySelectedScoreNotesToClipboard(selectedNotes)) {
+        if (copyCurrentSelectionToClipboard()) {
           event.preventDefault();
-          setStatus(`Copied ${selectedNotes.length} selected note${selectedNotes.length === 1 ? "" : "s"}.`);
+          const selectedNotes = selectedScoreNotes();
+          const hasRaster = Boolean(state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection));
+          setStatus(
+            selectedNotes.length || hasRaster
+              ? `Copied ${selectedNotes.length ? `${selectedNotes.length} note${selectedNotes.length === 1 ? "" : "s"}` : ""}${selectedNotes.length && hasRaster ? " and " : ""}${hasRaster ? "a freehand region" : ""}.`
+              : "Copied note."
+          );
           renderCanvas();
-        } else {
-          const scoreHit = currentEditableScoreHit();
-          if (!(scoreHit && copyScoreNoteToClipboard(scoreHit.note))) {
-            return;
-          }
-          event.preventDefault();
-          setStatus(`Copied note at ${scoreHit.note.startSec.toFixed(2)} s.`);
-          renderCanvas();
+          return;
         }
         return;
       }
 
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "x") {
-        if (cutSelectedScoreNotes()) {
+        if (selectedScoreNotes().length || (state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection))) {
+          if (copyCurrentSelectionToClipboard()) {
+            event.preventDefault();
+            deleteCurrentSelection();
+          }
+        } else if (cutSelectedScoreNotes()) {
           event.preventDefault();
         }
         return;
@@ -9540,6 +10400,28 @@
 
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v") {
         if (pasteScoreNoteFromClipboard()) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "d") {
+        if (duplicateCurrentSelectionRight()) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "r") {
+        if (state.tool === "select" && normalizeSelectedScoreIndices().length) {
+          event.preventDefault();
+          enterScoreRepeatMode();
+        }
+        return;
+      }
+
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (deleteCurrentSelection()) {
           event.preventDefault();
         }
         return;
@@ -9595,7 +10477,8 @@
       }
 
       if (event.key.toLowerCase() === "c") {
-        clearSpectrogram();
+        event.preventDefault();
+        confirmAndClearSpectrogram();
         return;
       }
 
