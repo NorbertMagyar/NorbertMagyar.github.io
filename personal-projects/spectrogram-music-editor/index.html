@@ -192,6 +192,7 @@
                       <select id="editor-view-select">
                         <option value="spectrogram">Free spectrogram</option>
                         <option value="guitar-score">Guitar score sheet</option>
+                        <option value="violin-score">Violin score sheet</option>
                         <option value="piano-score">Grand piano score sheet</option>
                       </select>
                     </label>
@@ -200,6 +201,18 @@
                       <select id="frequency-axis-select">
                         <option value="log" selected>Logarithmic</option>
                         <option value="linear">Equal-spaced</option>
+                      </select>
+                    </label>
+                    <label class="control-stack" for="time-signature-select" id="time-signature-control" hidden>
+                      <span>Time signature</span>
+                      <select id="time-signature-select">
+                        <option value="2/4">2/4</option>
+                        <option value="3/4">3/4</option>
+                        <option value="4/4" selected>4/4</option>
+                        <option value="5/4">5/4</option>
+                        <option value="6/8">6/8</option>
+                        <option value="9/8">9/8</option>
+                        <option value="12/8">12/8</option>
                       </select>
                     </label>
                     <label class="check-row menu-check-row">
@@ -336,8 +349,8 @@
                   <span class="help-tooltip" role="tooltip">
                     <span class="help-tooltip-row"><strong>V</strong> Select the Time tool for time positioning</span>
                     <span class="help-tooltip-row"><strong>1-5</strong> Select Brush, Spray, Gaussian, Line, or Erase</span>
-                    <span class="help-tooltip-row"><strong>6</strong> Select the Note tool in guitar or piano score-sheet view</span>
-                    <span class="help-tooltip-row"><strong>7</strong> Select the note-selection tool in guitar or piano score-sheet view</span>
+                    <span class="help-tooltip-row"><strong>N</strong> Select the Note tool in guitar, violin, or piano score-sheet view</span>
+                    <span class="help-tooltip-row"><strong>A</strong> Select the note-selection tool in guitar, violin, or piano score-sheet view</span>
                     <span class="help-tooltip-row"><strong>[</strong> or <strong>]</strong> Change brush size</span>
                     <span class="help-tooltip-row"><strong>-</strong> or <strong>=</strong> Change strength</span>
                     <span class="help-tooltip-row"><strong>Scroll</strong> Zoom in time</span>
@@ -370,54 +383,62 @@
                       <svg viewBox="0 0 24 24"><path d="M6.5 6.5h2.6v11H6.5zM10.8 6.5h2.6v11h-2.6z"/><path d="M15.2 6.2l4.8 5.8-4.8 5.8z" fill="currentColor" stroke="none"/></svg>
                     </span>
                     <span>Time</span>
+                    <span class="shortcut-inline-badge" aria-hidden="true">V</span>
                   </button>
                   <button type="button" class="tool-btn" data-tool="select" hidden>
                     <span class="tool-icon" aria-hidden="true">
                       <svg viewBox="0 0 24 24"><path d="M7 4.5v13l3.7-3.7 2.1 5.2 2.2-.9-2.1-5.2H18z"/></svg>
                     </span>
                     <span>Select</span>
-                  </button>
-                  <button type="button" class="tool-btn" data-tool="brush">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24"><path d="M6 18l7-7m-4 10c-2.2 0-3.5-.7-4.3-1.7-.7-.9-.8-2.2-.1-3l8.9-8.9a2.5 2.5 0 013.5 0l.7.7a2.5 2.5 0 010 3.5L9 20.3"/></svg>
-                    </span>
-                    <span>Brush</span>
-                  </button>
-                  <button type="button" class="tool-btn" data-tool="spray">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="1.2"/><circle cx="12" cy="6" r="1"/><circle cx="15.5" cy="9.5" r="1.1"/><circle cx="10.5" cy="12.5" r="1.1"/><circle cx="14.5" cy="14.5" r="1.4"/><circle cx="7.5" cy="16" r="1.2"/><path d="M17 18.5c1.4-1 2.5-2.4 3-4.2"/></svg>
-                    </span>
-                    <span>Spray</span>
-                  </button>
-                  <button type="button" class="tool-btn" data-tool="gaussian">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24"><path d="M3 18c2.2 0 2.8-12 9-12s6.8 12 9 12"/></svg>
-                    </span>
-                    <span>Gaussian</span>
-                  </button>
-                  <button type="button" class="tool-btn" data-tool="line">
-                    <span class="tool-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24"><path d="M4 18L20 6"/><circle cx="4" cy="18" r="1.6"/><circle cx="20" cy="6" r="1.6"/></svg>
-                    </span>
-                    <span>Line</span>
+                    <span class="shortcut-inline-badge" aria-hidden="true">A</span>
                   </button>
                   <button type="button" class="tool-btn note-tool-btn" data-tool="note" hidden>
                     <span class="tool-icon" aria-hidden="true">
                       <svg viewBox="0 0 24 24"><rect x="4" y="9" width="16" height="6" rx="1.2"/><path d="M4 12h16"/></svg>
                     </span>
                     <span>Note</span>
+                    <span class="shortcut-inline-badge" aria-hidden="true">N</span>
                     <span
                       class="hover-help note-tool-help"
                       tabindex="0"
                       aria-label="About the Note tool"
-                      data-help="The Note tool draws snapped musical notes with fixed, quantized durations. It only works in the Guitar score sheet or Grand piano score sheet editor views. Shift + Scroll changes the preview note length. Ctrl+C / Cmd+C copies a hovered note, Ctrl+V / Cmd+V pastes it, and Ctrl+Drag / Cmd+Drag duplicates and drags a note."
+                      data-help="The Note tool draws snapped musical notes with fixed, quantized durations. It only works in the Guitar score sheet, Violin score sheet, or Grand piano score sheet editor views. Shift + Scroll changes the preview note length. Ctrl+C / Cmd+C copies a hovered note, Ctrl+V / Cmd+V pastes it, and Ctrl+Drag / Cmd+Drag duplicates and drags a note."
                     >?</span>
+                  </button>
+                  <button type="button" class="tool-btn" data-tool="brush">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M6 18l7-7m-4 10c-2.2 0-3.5-.7-4.3-1.7-.7-.9-.8-2.2-.1-3l8.9-8.9a2.5 2.5 0 013.5 0l.7.7a2.5 2.5 0 010 3.5L9 20.3"/></svg>
+                    </span>
+                    <span>Brush</span>
+                    <span class="shortcut-inline-badge" aria-hidden="true">1</span>
+                  </button>
+                  <button type="button" class="tool-btn" data-tool="spray">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="1.2"/><circle cx="12" cy="6" r="1"/><circle cx="15.5" cy="9.5" r="1.1"/><circle cx="10.5" cy="12.5" r="1.1"/><circle cx="14.5" cy="14.5" r="1.4"/><circle cx="7.5" cy="16" r="1.2"/><path d="M17 18.5c1.4-1 2.5-2.4 3-4.2"/></svg>
+                    </span>
+                    <span>Spray</span>
+                    <span class="shortcut-inline-badge" aria-hidden="true">2</span>
+                  </button>
+                  <button type="button" class="tool-btn" data-tool="gaussian">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M3 18c2.2 0 2.8-12 9-12s6.8 12 9 12"/></svg>
+                    </span>
+                    <span>Gaussian</span>
+                    <span class="shortcut-inline-badge" aria-hidden="true">3</span>
+                  </button>
+                  <button type="button" class="tool-btn" data-tool="line">
+                    <span class="tool-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M4 18L20 6"/><circle cx="4" cy="18" r="1.6"/><circle cx="20" cy="6" r="1.6"/></svg>
+                    </span>
+                    <span>Line</span>
+                    <span class="shortcut-inline-badge" aria-hidden="true">4</span>
                   </button>
                   <button type="button" class="tool-btn" data-tool="erase">
                     <span class="tool-icon" aria-hidden="true">
                       <svg viewBox="0 0 24 24"><path d="M8 18h9"/><path d="M6 15l6.7-6.7a1.9 1.9 0 012.7 0l2.3 2.3a1.9 1.9 0 010 2.7L13 18H9z"/></svg>
                     </span>
                     <span>Erase</span>
+                    <span class="shortcut-inline-badge" aria-hidden="true">5</span>
                   </button>
                 </div>
                 <div class="toolbar-subrow">
@@ -511,12 +532,14 @@
                       <span class="tool-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24"><path d="M8 6.5v11l9-5.5z" fill="currentColor" stroke="none"/></svg>
                       </span>
+                      <span class="transport-shortcut-badge" aria-hidden="true">Space</span>
                       <span class="sr-only">Play</span>
                     </button>
                     <button id="stop-btn" type="button" class="action-btn transport-btn" aria-label="Stop" title="Stop">
                       <span class="tool-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.4" fill="currentColor" stroke="none"/></svg>
                       </span>
+                      <span class="transport-shortcut-badge" aria-hidden="true">S</span>
                       <span class="sr-only">Stop</span>
                     </button>
                     <button id="loop-btn" type="button" class="action-btn transport-btn" aria-label="Loop playback" aria-pressed="false" title="Loop playback">
@@ -546,12 +569,14 @@
                       <span class="tool-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24"><path d="M9 8H5v-4"/><path d="M5 8c1.9-2.5 4.6-4 8-4 4.9 0 8 3.3 8 8s-3.1 8-8 8c-3 0-5.3-1-7.1-3"/></svg>
                       </span>
+                      <span class="transport-shortcut-badge" aria-hidden="true">Ctrl+Z</span>
                       <span class="sr-only">Undo</span>
                     </button>
                     <button id="clear-btn" type="button" class="action-btn transport-btn danger-btn" aria-label="Clear editor" title="Clear editor">
                       <span class="tool-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24"><path d="M6 7h12"/><path d="M9 7V5.5h6V7"/><path d="M8 7l.7 10.2a1.4 1.4 0 001.4 1.3h3.8a1.4 1.4 0 001.4-1.3L16 7"/><path d="M10 10.2v5.2M14 10.2v5.2"/></svg>
                       </span>
+                      <span class="transport-shortcut-badge" aria-hidden="true">C</span>
                       <span class="sr-only">Clear</span>
                     </button>
                   </div>

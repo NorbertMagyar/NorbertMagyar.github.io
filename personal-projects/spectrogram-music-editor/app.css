@@ -474,6 +474,9 @@ select {
   display: inline-flex;
   align-items: center;
   gap: 0.58rem;
+  position: relative;
+  overflow: visible;
+  padding-right: 2.75rem;
 }
 
 .tool-row {
@@ -542,6 +545,27 @@ select:hover {
 .toolbar-help {
   margin-left: 0;
   flex: 0 0 auto;
+}
+
+.shortcut-inline-badge {
+  position: absolute;
+  top: 0.38rem;
+  right: 0.46rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.36rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(17, 24, 41, 0.82);
+  color: #b9c7df;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  pointer-events: none;
 }
 
 .note-tool-btn {
@@ -1072,6 +1096,7 @@ select:hover {
     0 0 0 1px rgba(255, 255, 255, 0.04),
     0 0 28px rgba(111, 214, 255, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  overflow: visible;
 }
 
 .transport-btn .tool-icon {
@@ -1123,6 +1148,29 @@ select:hover {
 .utility-cluster .transport-btn {
   width: 2.9rem;
   height: 2.9rem;
+}
+
+.transport-shortcut-badge {
+  position: absolute;
+  left: 50%;
+  bottom: -0.52rem;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.1rem;
+  padding: 0 0.38rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(10, 15, 27, 0.96);
+  color: #c4d2e8;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
 }
 
 .control-panel {

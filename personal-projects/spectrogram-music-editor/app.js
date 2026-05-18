@@ -176,6 +176,8 @@
     const pianoCouplingInput = document.getElementById("piano-coupling-input");
     const editorViewSelect = document.getElementById("editor-view-select");
     const frequencyAxisSelect = document.getElementById("frequency-axis-select");
+    const timeSignatureControl = document.getElementById("time-signature-control");
+    const timeSignatureSelect = document.getElementById("time-signature-select");
     const drawingToolsToggle = document.getElementById("drawing-tools-toggle");
     const gridToggle = document.getElementById("grid-toggle");
     const DEFAULT_FREE_MIN_FREQ = Number(minFreqInput.value);
@@ -221,6 +223,15 @@
         anchorMidis: [40, 45, 50, 55, 59, 64],
         labelMode: "anchors"
       },
+      "violin-score": {
+        label: "violin score sheet",
+        axisLabel: "Pitch / Violin Note",
+        minMidi: 55,
+        maxMidi: 105,
+        padSemitones: 2,
+        anchorMidis: [55, 62, 69, 76],
+        labelMode: "anchors"
+      },
       "piano-score": {
         label: "grand piano score sheet",
         axisLabel: "Pitch / Piano Note",
@@ -251,7 +262,7 @@
       scoreRepeatCountText: "1",
       scoreRepeatCountEdited: false,
       scoreRepeatSpacingBeats: 0,
-      notePreviewLengthBeats: 2,
+      notePreviewLengthBeats: 0.5,
       noteDurationUnlocked: false,
       noteUnlockCol: null,
       scoreEditMode: null,
@@ -314,7 +325,8 @@
       currentBasslinePreset: "none",
       editorView: "spectrogram",
       frequencyAxis: frequencyAxisSelect ? frequencyAxisSelect.value || "log" : "log",
-      renderMode: "geometry",
+      scoreTimeSignature: timeSignatureSelect ? timeSignatureSelect.value || "4/4" : "4/4",
+      renderMode: "spectral",
       noteBackend: noteBackendSelect ? noteBackendSelect.value || "procedural" : "procedural",
       noteBackendResolved: noteBackendSelect ? noteBackendSelect.value || "procedural" : "procedural",
       noteBackendWarning: "",
@@ -351,6 +363,7 @@
       compositeLayerCache: null,
       scoreViewFreqs: {
         "guitar-score": defaultFrequencyRangeForView("guitar-score"),
+        "violin-score": defaultFrequencyRangeForView("violin-score"),
         "piano-score": defaultFrequencyRangeForView("piano-score")
       },
       freeMinFreq: Number(minFreqInput.value),
@@ -449,7 +462,7 @@
   }
 
   function defaultScoreNoteLengthBeats() {
-    return 2;
+    return 0.5;
   }
 
   function formatScoreLengthBeats(beats) {
@@ -462,6 +475,33 @@
     }
     const denominator = Math.round(1 / Math.max(rounded, 1e-6));
     return `1/${denominator}`;
+  }
+
+  function formatScoreGapLengthBeats(beats) {
+    const rounded = Math.max(0, Number(beats.toFixed(6)));
+    if (Math.abs(rounded) < 1e-6) {
+      return "0";
+    }
+    if (rounded >= 1) {
+      if (Math.abs(rounded - Math.round(rounded)) < 1e-6) {
+        return String(Math.round(rounded));
+      }
+      return `${Math.floor(rounded)}+`;
+    }
+    const options = [0, ...scoreAllowedNoteLengthsBeats().filter((candidate) => candidate < 1 - 1e-6)];
+    const exact = options.find((candidate) => Math.abs(candidate - rounded) < 1e-6);
+    if (exact != null) {
+      return formatScoreLengthBeats(exact);
+    }
+    let lower = 0;
+    for (const candidate of options) {
+      if (candidate < rounded - 1e-6) {
+        lower = candidate;
+      } else {
+        break;
+      }
+    }
+    return `${formatScoreLengthBeats(lower)}+`;
   }
 
   function normalizeScorePreviewLengthBeats(beats) {
@@ -535,25 +575,92 @@
     return 60 / Math.max(1, basslineBpm());
   }
 
+  function normalizedScoreTimeSignature(signature = state.scoreTimeSignature) {
+    const value = typeof signature === "string" ? signature : "4/4";
+    return /^(2\/4|3\/4|4\/4|5\/4|6\/8|9\/8|12\/8)$/.test(value) ? value : "4/4";
+  }
+
+  function currentScoreTimeSignature() {
+    const normalized = normalizedScoreTimeSignature();
+    state.scoreTimeSignature = normalized;
+    return normalized;
+  }
+
+  function currentScoreTimeSignatureParts() {
+    const [numeratorText, denominatorText] = currentScoreTimeSignature().split("/");
+    return {
+      numerator: Number(numeratorText) || 4,
+      denominator: Number(denominatorText) || 4
+    };
+  }
+
+  function currentScoreBeatUnitBeats() {
+    const { denominator } = currentScoreTimeSignatureParts();
+    return 4 / Math.max(1, denominator);
+  }
+
+  function currentScoreBeatsPerMeasure() {
+    const { numerator } = currentScoreTimeSignatureParts();
+    return numerator * currentScoreBeatUnitBeats();
+  }
+
+  function currentScorePrimaryBeatStepBeats() {
+    const { numerator, denominator } = currentScoreTimeSignatureParts();
+    if (denominator === 8 && numerator % 3 === 0 && numerator > 3) {
+      return currentScoreBeatUnitBeats() * 3;
+    }
+    return currentScoreBeatUnitBeats();
+  }
+
+  function scorePlacementStepBeats() {
+    return scoreQuantizationStepBeats();
+  }
+
+  function scorePlacementStepSeconds() {
+    return scorePlacementStepBeats() * scoreBeatSeconds();
+  }
+
   function scoreQuantizationStepBeats() {
-    return 0.0625;
+    return 0.03125;
   }
 
   function scoreAllowedNoteLengthsBeats() {
     const maxBeats = Math.max(8, durationSeconds() / Math.max(0.001, scoreBeatSeconds()));
     const lengths = [];
-    for (let beats = 0.125; beats <= maxBeats + 1e-6; beats *= 2) {
+    for (let beats = 0.03125; beats <= maxBeats + 1e-6; beats *= 2) {
       lengths.push(Number(beats.toFixed(6)));
     }
     return lengths;
   }
 
   function minimumScoreNoteDurationSec() {
-    return Math.max(0.02, scoreQuantizationStepBeats() * scoreBeatSeconds());
+    return scoreQuantizationStepBeats() * scoreBeatSeconds();
   }
 
   function quantizeToStep(value, step) {
     return Math.round(value / step) * step;
+  }
+
+  function quantizeScoreTimeSec(rawSec, { clampEnd = true } = {}) {
+    const beatSeconds = scoreBeatSeconds();
+    const snappedBeats = quantizeToStep(rawSec / beatSeconds, scorePlacementStepBeats());
+    const maxStart = clampEnd
+      ? Math.max(0, durationSeconds() - minimumScoreNoteDurationSec())
+      : durationSeconds();
+    return clamp(snappedBeats * beatSeconds, 0, maxStart);
+  }
+
+  function snapScorePointToGrid(point) {
+    const midiSnap = snapPointToScoreMidi(point);
+    if (!midiSnap) {
+      return null;
+    }
+    const snappedSec = quantizeScoreTimeSec(timeFromCol(point.col));
+    return {
+      ...midiSnap,
+      startSec: snappedSec,
+      col: colFromTime(snappedSec)
+    };
   }
 
   function nearestAllowedScoreLengthBeats(rawBeats) {
@@ -599,15 +706,11 @@
   }
 
   function previewScoreNotePlacement(point) {
-    const snap = snapPointToScoreMidi(point);
+    const snap = snapScorePointToGrid(point);
     if (!snap) {
       return null;
     }
-    const startSec = clamp(
-      timeFromCol(snap.col),
-      0,
-      Math.max(0, durationSeconds() - minimumScoreNoteDurationSec())
-    );
+    const startSec = snap.startSec;
     const endSec = clamp(
       startSec + currentNotePreviewLengthBeats() * scoreBeatSeconds(),
       startSec + minimumScoreNoteDurationSec(),
@@ -624,19 +727,18 @@
   }
 
   function quantizedScoreNotePlacement(startPoint, endPoint) {
-    const startSnap = snapPointToScoreMidi(startPoint);
-    const endSnap = snapPointToScoreMidi(endPoint);
+    const startSnap = snapScorePointToGrid(startPoint);
+    const endSnap = snapScorePointToGrid(endPoint);
     if (!startSnap || !endSnap) {
       return null;
     }
 
     const startCol = startSnap.col;
     const endCol = endSnap.col;
-    const rawStartSec = timeFromCol(startCol);
+    const rawStartSec = startSnap.startSec;
     const beatSeconds = scoreBeatSeconds();
-    const stepBeats = scoreQuantizationStepBeats();
     const activationBeats = scoreNoteDragActivationBeats();
-    const rawEndSec = timeFromCol(endCol);
+    const rawEndSec = endSnap.startSec;
     const rawDragBeats = Math.abs((rawEndSec - rawStartSec) / beatSeconds);
     if (!state.noteDurationUnlocked && rawDragBeats > activationBeats) {
       state.noteDurationUnlocked = true;
@@ -649,7 +751,11 @@
       durationSeconds()
     );
     if (state.noteDurationUnlocked) {
-      endSec = clamp(rawEndSec, startSec + minimumScoreNoteDurationSec(), durationSeconds());
+      endSec = clamp(
+        quantizeScoreTimeSec(rawEndSec, { clampEnd: false }),
+        startSec + minimumScoreNoteDurationSec(),
+        durationSeconds()
+      );
     }
     return {
       midi: endSnap.midi,
@@ -1304,6 +1410,7 @@
       renderMode: state.renderMode,
       noteBackend: state.noteBackend,
       frequencyAxis: frequencyAxisMode(),
+      scoreTimeSignature: currentScoreTimeSignature(),
       showPhaseDiagnostics: state.showPhaseDiagnostics,
       showSampleDebug: state.showSampleDebug,
       loopPlayback: state.loopPlayback,
@@ -1313,6 +1420,7 @@
       freeMaxFreq: state.freeMaxFreq,
       scoreViewFreqs: {
         "guitar-score": { ...state.scoreViewFreqs["guitar-score"] },
+        "violin-score": { ...state.scoreViewFreqs["violin-score"] },
         "piano-score": { ...state.scoreViewFreqs["piano-score"] }
       },
       viewOffsetCol: state.viewOffsetCol,
@@ -1336,9 +1444,10 @@
     state.editorView = settings.editorView in SCORE_VIEW_PROFILES || settings.editorView === "spectrogram"
       ? settings.editorView
       : "spectrogram";
-    state.renderMode = typeof settings.renderMode === "string" ? settings.renderMode : "geometry";
+    state.renderMode = typeof settings.renderMode === "string" ? settings.renderMode : "spectral";
     state.noteBackend = isValidNoteBackend(settings.noteBackend) ? settings.noteBackend : "procedural";
     state.frequencyAxis = settings.frequencyAxis === "linear" ? "linear" : "log";
+    state.scoreTimeSignature = normalizedScoreTimeSignature(settings.scoreTimeSignature);
     state.showPhaseDiagnostics = Boolean(settings.showPhaseDiagnostics);
     state.showSampleDebug = Boolean(settings.showSampleDebug);
     state.loopPlayback = Boolean(settings.loopPlayback);
@@ -1350,6 +1459,12 @@
       state.scoreViewFreqs["guitar-score"] = {
         min: Number(settings.scoreViewFreqs["guitar-score"].min) || state.scoreViewFreqs["guitar-score"].min,
         max: Number(settings.scoreViewFreqs["guitar-score"].max) || state.scoreViewFreqs["guitar-score"].max
+      };
+    }
+    if (settings.scoreViewFreqs && settings.scoreViewFreqs["violin-score"]) {
+      state.scoreViewFreqs["violin-score"] = {
+        min: Number(settings.scoreViewFreqs["violin-score"].min) || state.scoreViewFreqs["violin-score"].min,
+        max: Number(settings.scoreViewFreqs["violin-score"].max) || state.scoreViewFreqs["violin-score"].max
       };
     }
     if (settings.scoreViewFreqs && settings.scoreViewFreqs["piano-score"]) {
@@ -1369,6 +1484,9 @@
     }
     if (frequencyAxisSelect) {
       frequencyAxisSelect.value = state.frequencyAxis;
+    }
+    if (timeSignatureSelect) {
+      timeSignatureSelect.value = state.scoreTimeSignature;
     }
     if (gridToggle) {
       gridToggle.checked = settings.showGrid !== false;
@@ -1972,7 +2090,7 @@
     if (mode === "hybrid") {
       return "Hybrid coherence + Griffin-Lim";
     }
-    return "Spectral bins";
+    return "Geometry coherence";
   }
 
   function renderModeDescription(mode) {
@@ -2009,6 +2127,26 @@
 
   function resolvedNoteBackendName() {
     return noteBackendName(state.noteBackendResolved || state.noteBackend);
+  }
+
+  function preferredNoteBackendForEditorView(view = state.editorView) {
+    if (view === "guitar-score") {
+      return "steel-guitar-samples";
+    }
+    if (view === "violin-score") {
+      return "violin-fluidr3-samples";
+    }
+    if (view === "piano-score") {
+      return "piano-samples";
+    }
+    return "procedural";
+  }
+
+  function preferredRenderModeForNoteBackend(backend = state.noteBackend, currentMode = state.renderMode) {
+    if (backend === "procedural") {
+      return "spectral";
+    }
+    return currentMode;
   }
 
   function isValidNoteBackend(backend) {
@@ -2366,7 +2504,7 @@
 
   function scoreNoteGeometry(note) {
     const startCol = colFromTime(note.startSec);
-    const endCol = Math.max(startCol + 1, colFromTime(note.startSec + note.durationSec));
+    const endCol = Math.max(startCol, colFromTime(note.startSec + note.durationSec));
     const topRow = rowFromFreq(midiToFreq(note.midi + 0.48));
     const bottomRow = rowFromFreq(midiToFreq(note.midi - 0.48));
     return {
@@ -2386,7 +2524,7 @@
     for (let index = state.scoreEvents.length - 1; index >= 0; index -= 1) {
       const note = state.scoreEvents[index];
       const geometry = scoreNoteGeometry(note);
-      const noteWidthCols = Math.max(1, geometry.endCol - geometry.startCol);
+      const noteWidthCols = Math.max(0.02, geometry.endCol - geometry.startCol);
       const edgeThresholdCols = Math.min(
         baseEdgeThresholdCols,
         Math.max(0.22, noteWidthCols * 0.26)
@@ -2708,7 +2846,7 @@
     let dirtyEndSec = -Infinity;
     const dirtyLayers = new Set();
     if (copies.length) {
-      state.scoreEvents = mergeAdjacentNoteEvents([
+      state.scoreEvents = normalizeScoreNoteEvents([
         ...state.scoreEvents,
         ...copies
       ]);
@@ -2949,7 +3087,7 @@
         startSec: source.startSec + startDelta,
         midi: source.midi + midiDelta
       }));
-      state.scoreEvents = mergeAdjacentNoteEvents([
+      state.scoreEvents = normalizeScoreNoteEvents([
         ...state.scoreEvents,
         ...pastedNotes
       ]);
@@ -3018,7 +3156,9 @@
       if (!originalNotes.length || !selectionIndices.length) {
         return false;
       }
-      const deltaSec = timeFromCol(point.col) - timeFromCol(state.scoreEditStartPoint.col);
+      const deltaSec =
+        quantizeScoreTimeSec(timeFromCol(point.col), { clampEnd: false })
+        - quantizeScoreTimeSec(timeFromCol(state.scoreEditStartPoint.col), { clampEnd: false });
       const nextMidi = nearestScoreMidiForPoint(point);
       const deltaMidi = nextMidi === null || state.scoreEditStartMidi === null ? 0 : nextMidi - state.scoreEditStartMidi;
       const profile = currentScoreProfile();
@@ -3062,7 +3202,9 @@
     }
 
     if (state.scoreEditMode === "move") {
-      const deltaSec = timeFromCol(point.col) - timeFromCol(state.scoreEditStartPoint.col);
+      const deltaSec =
+        quantizeScoreTimeSec(timeFromCol(point.col), { clampEnd: false })
+        - quantizeScoreTimeSec(timeFromCol(state.scoreEditStartPoint.col), { clampEnd: false });
       const nextMidi = nearestScoreMidiForPoint(point);
       const deltaMidi = nextMidi === null || state.scoreEditStartMidi === null ? 0 : nextMidi - state.scoreEditStartMidi;
       const duration = original.durationSec;
@@ -3071,7 +3213,11 @@
       nextNote.midi = clamp(original.midi + deltaMidi, currentScoreProfile().minMidi, currentScoreProfile().maxMidi);
     } else if (state.scoreEditMode === "resize-left") {
       const noteEnd = original.startSec + original.durationSec;
-      const rawStartSec = clamp(timeFromCol(point.col), 0, noteEnd - minDuration);
+      const rawStartSec = clamp(
+        quantizeScoreTimeSec(timeFromCol(point.col), { clampEnd: false }),
+        0,
+        noteEnd - minDuration
+      );
       const rawDurationBeats = (noteEnd - rawStartSec) / scoreBeatSeconds();
       const maxDurationBeats = noteEnd / scoreBeatSeconds();
       const snappedDurationBeats = nearestAllowedScoreLengthBeatsInRange(
@@ -3083,7 +3229,11 @@
       nextNote.startSec = clamp(noteEnd - snappedDurationSec, 0, noteEnd - minDuration);
       nextNote.durationSec = noteEnd - nextNote.startSec;
     } else if (state.scoreEditMode === "resize-right") {
-      const rawEndSec = clamp(timeFromCol(point.col), original.startSec + minDuration, trackDuration);
+      const rawEndSec = clamp(
+        quantizeScoreTimeSec(timeFromCol(point.col), { clampEnd: false }),
+        original.startSec + minDuration,
+        trackDuration
+      );
       const rawDurationBeats = (rawEndSec - original.startSec) / scoreBeatSeconds();
       const maxDurationBeats = (trackDuration - original.startSec) / scoreBeatSeconds();
       const snappedDurationBeats = nearestAllowedScoreLengthBeatsInRange(
@@ -3273,7 +3423,7 @@
     }
 
     if (changed) {
-      state.scoreEvents = mergeAdjacentNoteEvents(nextEvents);
+      state.scoreEvents = normalizeScoreNoteEvents(nextEvents);
     }
     return changed;
   }
@@ -3293,7 +3443,7 @@
       midi: placement.midi,
       velocity
     };
-    state.scoreEvents = mergeAdjacentNoteEvents([
+    state.scoreEvents = normalizeScoreNoteEvents([
       ...state.scoreEvents,
       addedNote
     ]);
@@ -3676,6 +3826,13 @@
       frequencyAxisSelect.value = frequencyAxisMode();
       frequencyAxisSelect.title = `${frequencyAxisName()} frequency axis`;
     }
+    if (timeSignatureSelect) {
+      timeSignatureSelect.value = currentScoreTimeSignature();
+      timeSignatureSelect.title = `${currentScoreTimeSignature()} timing grid`;
+    }
+    if (timeSignatureControl) {
+      timeSignatureControl.hidden = !isScoreSheetMode();
+    }
     if (renderModeLabel) {
       renderModeLabel.textContent = `Render mode: ${renderModeName(state.renderMode)}`;
     }
@@ -3999,6 +4156,24 @@
     return guides;
   }
 
+  function currentScoreGridStepBeats() {
+    const minPixels = 12;
+    const visibleSec = Math.max(0.001, visibleTimeRange().end - visibleTimeRange().start);
+    const pixelsPerSecond = plotWidth() / visibleSec;
+    const beatUnit = currentScoreBeatUnitBeats();
+    const compoundBeat = currentScorePrimaryBeatStepBeats();
+    const measure = currentScoreBeatsPerMeasure();
+    const candidates = Array.from(new Set([scoreQuantizationStepBeats(), scoreQuantizationStepBeats() * 2, 0.125, 0.25, 0.5, beatUnit, compoundBeat, 1, 2, measure, 4]))
+      .filter((beats) => beats > 0)
+      .sort((a, b) => a - b);
+    for (const beats of candidates) {
+      if (beats * scoreBeatSeconds() * pixelsPerSecond >= minPixels) {
+        return beats;
+      }
+    }
+    return candidates.at(-1);
+  }
+
   function drawGridAndAxes() {
     const x0 = margins.left;
     const y0 = margins.top;
@@ -4014,10 +4189,12 @@
       ctx.strokeStyle = "rgba(148, 177, 220, 0.22)";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      for (let i = 1; i < 8; i += 1) {
-        const x = x0 + (w * i) / 8;
-        ctx.moveTo(x, y0);
-        ctx.lineTo(x, y0 + h);
+      if (!isScoreSheetMode()) {
+        for (let i = 1; i < 8; i += 1) {
+          const x = x0 + (w * i) / 8;
+          ctx.moveTo(x, y0);
+          ctx.lineTo(x, y0 + h);
+        }
       }
       if (!isScoreSheetMode()) {
         for (let i = 1; i < 6; i += 1) {
@@ -4029,6 +4206,41 @@
       ctx.stroke();
 
       if (isScoreSheetMode()) {
+        const stepBeats = currentScoreGridStepBeats();
+        const beatSeconds = scoreBeatSeconds();
+        const measureBeats = currentScoreBeatsPerMeasure();
+        const beatUnitBeats = currentScoreBeatUnitBeats();
+        const primaryBeatBeats = currentScorePrimaryBeatStepBeats();
+        const visibleRange = visibleTimeRange();
+        const startBeat = Math.floor((visibleRange.start / beatSeconds) / stepBeats) * stepBeats;
+        const endBeat = (visibleRange.end / beatSeconds) + stepBeats;
+        for (let beat = startBeat; beat <= endBeat + 1e-6; beat += stepBeats) {
+          const timeSec = beat * beatSeconds;
+          if (timeSec < visibleRange.start - 1e-6 || timeSec > visibleRange.end + 1e-6) {
+            continue;
+          }
+          const x = x0 + ((timeSec - visibleRange.start) / Math.max(1e-6, visibleRange.end - visibleRange.start)) * w;
+          const isMeasure = Math.abs(beat - Math.round(beat / measureBeats) * measureBeats) < 1e-6;
+          const isPrimaryBeat = Math.abs(beat - Math.round(beat / primaryBeatBeats) * primaryBeatBeats) < 1e-6;
+          const isBeat = Math.abs(beat - Math.round(beat / beatUnitBeats) * beatUnitBeats) < 1e-6;
+          const isSubdivision = Math.abs((beat / 0.5) - Math.round(beat / 0.5)) < 1e-6;
+          ctx.save();
+          ctx.strokeStyle = isMeasure
+            ? "rgba(255, 208, 138, 0.32)"
+            : isPrimaryBeat
+              ? "rgba(214, 232, 255, 0.24)"
+              : isBeat
+                ? "rgba(148, 177, 220, 0.18)"
+                : isSubdivision
+                  ? "rgba(112, 148, 194, 0.12)"
+                  : "rgba(92, 126, 171, 0.09)";
+          ctx.lineWidth = isMeasure ? 2.2 : isPrimaryBeat ? 1.5 : isBeat ? 1.1 : isSubdivision ? 0.9 : 0.75;
+          ctx.beginPath();
+          ctx.moveTo(x, y0);
+          ctx.lineTo(x, y0 + h);
+          ctx.stroke();
+          ctx.restore();
+        }
         const guides = currentScoreGuides();
         for (const guide of guides) {
           const y = y0 + (rowFromFreq(guide.freq) / (GRID_ROWS - 1)) * h;
@@ -4190,6 +4402,76 @@
     ctx.restore();
   }
 
+  function currentScoreTimingHint() {
+    if (!isScoreSheetMode() || !state.currentPointer || (state.tool !== "note" && !state.scoreEditMode)) {
+      return null;
+    }
+    const snapped = snapScorePointToGrid(state.currentPointer);
+    if (!snapped) {
+      return null;
+    }
+    const pointerSec = snapped.startSec;
+    const excludedIndices = new Set();
+    if (state.scoreEditMode === "move-selection") {
+      for (const index of state.scoreEditSelectionIndices || []) {
+        excludedIndices.add(index);
+      }
+    } else if (state.scoreEditIndex >= 0) {
+      excludedIndices.add(state.scoreEditIndex);
+    }
+
+    let closestEndSec = 0;
+    let found = false;
+    for (let i = 0; i < state.scoreEvents.length; i += 1) {
+      if (excludedIndices.has(i)) {
+        continue;
+      }
+      const note = state.scoreEvents[i];
+      const endSec = note.startSec + note.durationSec;
+      if (endSec <= pointerSec + 1e-6 && (!found || endSec > closestEndSec)) {
+        closestEndSec = endSec;
+        found = true;
+      }
+    }
+    const gapSec = Math.max(0, pointerSec - closestEndSec);
+    const gapBeats = gapSec / scoreBeatSeconds();
+    return {
+      point: snapped,
+      text: found
+        ? `Gap ${formatScoreGapLengthBeats(gapBeats)} • ${gapSec.toFixed(2)} s`
+        : `From start ${formatScoreGapLengthBeats(gapBeats)} • ${gapSec.toFixed(2)} s`
+    };
+  }
+
+  function drawScoreTimingHint() {
+    const hint = currentScoreTimingHint();
+    if (!hint) {
+      return;
+    }
+    const anchor = gridToCanvas(hint.point.col, hint.point.row);
+    ctx.save();
+    ctx.font = "600 13px Inter, system-ui, sans-serif";
+    const textWidth = ctx.measureText(hint.text).width;
+    const boxWidth = textWidth + 20;
+    const boxHeight = 26;
+    const boxX = clamp(anchor.x - boxWidth - 14, margins.left + 6, margins.left + plotWidth() - boxWidth - 6);
+    const boxY = clamp(anchor.y - boxHeight - 8, margins.top + 6, margins.top + plotHeight() - boxHeight - 6);
+
+    ctx.fillStyle = "rgba(8, 14, 26, 0.92)";
+    ctx.strokeStyle = "rgba(111, 214, 255, 0.36)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(240, 247, 255, 0.96)";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(hint.text, boxX + 10, boxY + boxHeight / 2);
+    ctx.restore();
+  }
+
   function drawNoteGhostPreview() {
     if (
       state.tool !== "note"
@@ -4221,6 +4503,24 @@
     ctx.lineWidth = 1.2;
     ctx.fillRect(x, y, width, height);
     ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, width - 1), Math.max(1, height - 1));
+    const lengthText = formatScoreLengthBeats(placement.durationBeats);
+    ctx.setLineDash([]);
+    ctx.font = "600 12px Inter, system-ui, sans-serif";
+    const textWidth = ctx.measureText(lengthText).width;
+    const badgeWidth = textWidth + 16;
+    const badgeHeight = 22;
+    const badgeX = clamp(x + width * 0.5 - badgeWidth * 0.5, margins.left + 4, margins.left + plotWidth() - badgeWidth - 4);
+    const badgeY = clamp(y + height + 8, margins.top + 4, margins.top + plotHeight() - badgeHeight - 4);
+    ctx.fillStyle = "rgba(8, 14, 26, 0.9)";
+    ctx.strokeStyle = "rgba(111, 214, 255, 0.42)";
+    ctx.beginPath();
+    ctx.roundRect(badgeX, badgeY, badgeWidth, badgeHeight, 9);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "rgba(240, 247, 255, 0.96)";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(lengthText, badgeX + badgeWidth * 0.5, badgeY + badgeHeight * 0.5);
     ctx.restore();
   }
 
@@ -4241,7 +4541,7 @@
 
     for (const note of scoreEvents) {
       const startCol = colFromTime(note.startSec);
-      const endCol = Math.max(startCol + 1, colFromTime(note.startSec + note.durationSec));
+      const endCol = Math.max(startCol, colFromTime(note.startSec + note.durationSec));
       if (endCol < startVisibleCol || startCol > endVisibleCol) {
         continue;
       }
@@ -4609,6 +4909,7 @@
     drawPlayhead();
     drawNoteGhostPreview();
     drawLinePreview();
+    drawScoreTimingHint();
     drawScoreSelectionMarquee();
     drawPointerPreview();
   }
@@ -4883,7 +5184,7 @@
             Math.max(0, durationSeconds() - scoreHit.note.durationSec)
           )
         };
-        state.scoreEvents = mergeAdjacentNoteEvents([...state.scoreEvents, duplicate]);
+        state.scoreEvents = normalizeScoreNoteEvents([...state.scoreEvents, duplicate]);
         const span = noteRenderSpan(duplicate);
         markDirty({
           full: false,
@@ -4910,7 +5211,7 @@
         ...note,
         startSec: clamp(note.startSec + deltaSec, 0, Math.max(0, durationSeconds() - note.durationSec))
       }));
-      state.scoreEvents = mergeAdjacentNoteEvents([...state.scoreEvents, ...duplicates]);
+      state.scoreEvents = normalizeScoreNoteEvents([...state.scoreEvents, ...duplicates]);
       const span = scoreNotesSpan(duplicates);
       if (span) {
         dirtyStartSec = Math.min(dirtyStartSec, span.startSec);
@@ -8701,6 +9002,13 @@
     return merged.sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
   }
 
+  function normalizeScoreNoteEvents(notes) {
+    return notes
+      .filter((note) => note && note.durationSec > 1e-4)
+      .map((note) => ({ ...note }))
+      .sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
+  }
+
   function parseMusicXmlScore(text) {
     const parser = new DOMParser();
     const xml = parser.parseFromString(text, "application/xml");
@@ -9896,10 +10204,10 @@
       setStatus("Moved freehand selection.");
     } else if (state.scoreEditMode === "move-selection") {
       clearScoreSelection();
-      state.scoreEvents = mergeAdjacentNoteEvents(state.scoreEvents);
+      state.scoreEvents = normalizeScoreNoteEvents(state.scoreEvents);
       setStatus("Moved selected notes.");
     } else if (state.scoreEditMode) {
-      state.scoreEvents = mergeAdjacentNoteEvents(state.scoreEvents);
+      state.scoreEvents = normalizeScoreNoteEvents(state.scoreEvents);
     } else if (state.tool === "line" && state.lineStart && state.linePreview) {
       stampLine(state.lineStart, state.linePreview, 1);
       markToolEditDirty(dirtyRangeFromPoints(state.lineStart, state.linePreview), {
@@ -10183,12 +10491,14 @@
           state.freeMaxFreq = effectiveMaxFrequency();
         }
         state.editorView = editorViewSelect.value;
+        state.noteBackend = preferredNoteBackendForEditorView(state.editorView);
+        state.renderMode = preferredRenderModeForNoteBackend(state.noteBackend, state.renderMode);
         applyEditorViewSettings();
         updateOutputs();
         markDirty();
         if (state.isPlaying) {
           const viewLabel = currentScoreProfile() ? currentScoreProfile().label : "free spectrogram";
-          stopPlayback(`Editor view switched to ${viewLabel}.`);
+          stopPlayback(`Editor view switched to ${viewLabel}. Note backend set to ${noteBackendName(state.noteBackend)}.`);
         } else {
           renderCanvas();
         }
@@ -10339,6 +10649,7 @@
     if (noteBackendSelect) {
       noteBackendSelect.addEventListener("input", () => {
         state.noteBackend = noteBackendSelect.value || "procedural";
+        state.renderMode = preferredRenderModeForNoteBackend(state.noteBackend, state.renderMode);
         updateOutputs();
         markDirty();
         if (state.isPlaying) {
@@ -10359,6 +10670,15 @@
         } else {
           renderCanvas();
         }
+      });
+    }
+
+    if (timeSignatureSelect) {
+      timeSignatureSelect.addEventListener("input", () => {
+        state.scoreTimeSignature = normalizedScoreTimeSignature(timeSignatureSelect.value);
+        updateOutputs();
+        scheduleSessionProjectSave();
+        renderCanvas();
       });
     }
 
@@ -10631,9 +10951,22 @@
         return;
       }
 
-      if (event.key >= "1" && event.key <= "7") {
+      if (event.key.toLowerCase() === "n") {
+        setTool("note");
+        renderCanvas();
+        return;
+      }
+
+      if (event.key >= "1" && event.key <= "5") {
         const index = Number(event.key) - 1;
-        const target = ["brush", "spray", "gaussian", "line", "erase", "note", "select"][index];
+        const target = ["brush", "spray", "gaussian", "line", "erase"][index];
+        setTool(target);
+        renderCanvas();
+        return;
+      }
+
+      if (event.key.toLowerCase() === "a") {
+        const target = "select";
         setTool(target);
         renderCanvas();
         return;
@@ -10688,6 +11021,9 @@
     }
     if (frequencyAxisSelect) {
       state.frequencyAxis = frequencyAxisSelect.value || "log";
+    }
+    if (timeSignatureSelect) {
+      state.scoreTimeSignature = normalizedScoreTimeSignature(timeSignatureSelect.value);
     }
     applyEditorViewSettings();
     updateOutputs();
