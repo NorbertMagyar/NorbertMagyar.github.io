@@ -513,20 +513,6 @@
                   </div>
                 </div>
 
-                <div class="timeline-bar" aria-label="Timeline viewport">
-                  <label class="timeline-label" for="timeline-track">
-                    <span>Timeline overview</span>
-                    <output id="timeline-out">0.00 s - 6.00 s</output>
-                  </label>
-                  <div id="timeline-track" class="timeline-track" role="scrollbar" aria-label="Timeline scrollbar" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0">
-                    <canvas id="timeline-overview" class="timeline-overview" width="1200" height="128" aria-hidden="true"></canvas>
-                    <div id="timeline-thumb" class="timeline-thumb">
-                      <span id="timeline-thumb-handle-left" class="timeline-thumb-handle is-left" aria-hidden="true"></span>
-                      <span id="timeline-thumb-handle-right" class="timeline-thumb-handle is-right" aria-hidden="true"></span>
-                    </div>
-                  </div>
-                </div>
-
                 <div class="editor-dock">
                   <div class="transport-cluster" role="toolbar" aria-label="Transport controls">
                     <button id="play-btn" type="button" class="action-btn transport-btn primary-btn" aria-label="Play" title="Play">
@@ -590,9 +576,20 @@
                   </div>
                 </div>
 
+                <div class="timeline-bar" aria-label="Timeline viewport">
+                  <output id="timeline-out" class="sr-only">0.00 s - 6.00 s</output>
+                  <div id="timeline-track" class="timeline-track" role="scrollbar" aria-label="Timeline scrollbar" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0">
+                    <canvas id="timeline-overview" class="timeline-overview" width="1200" height="128" aria-hidden="true"></canvas>
+                    <div id="timeline-thumb" class="timeline-thumb">
+                      <span id="timeline-thumb-handle-left" class="timeline-thumb-handle is-left" aria-hidden="true"></span>
+                      <span id="timeline-thumb-handle-right" class="timeline-thumb-handle is-right" aria-hidden="true"></span>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="status-bar">
                   <span id="status-text">Ready. Press Play to render and listen.</span>
-                  <span id="cursor-readout">t = 0.00 s | f = 440 Hz | a = 0.00</span>
+                  <span id="cursor-readout" hidden>t = 0.00 s | f = 440 Hz | a = 0.00</span>
                   <span id="sample-debug-text" class="status-debug-pill" hidden>Sample debug: idle.</span>
                 </div>
               </div>

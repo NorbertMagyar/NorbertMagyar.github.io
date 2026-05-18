@@ -213,7 +213,7 @@
     let scoreEventsRef = [];
     let nextTabId = 1;
     let nextLayerId = 1;
-    const margins = { left: 120, right: 28, top: 26, bottom: 54 };
+    const margins = { left: 120, right: 28, top: 26, bottom: 42 };
     const SCORE_VIEW_PROFILES = {
       "guitar-score": {
         label: "guitar score sheet",
@@ -4329,7 +4329,7 @@
 
     ctx.textAlign = "center";
     ctx.font = "700 16px Inter, system-ui, sans-serif";
-    ctx.fillText("Time", x0 + w / 2, canvas.height - 12);
+    ctx.fillText("Time", x0 + w / 2, canvas.height - 5);
     ctx.restore();
   }
 
@@ -4480,6 +4480,34 @@
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     ctx.fillText(hint.text, boxX + 10, boxY + boxHeight / 2);
+    ctx.restore();
+  }
+
+  function drawCursorReadoutOverlay() {
+    const text = cursorReadout ? cursorReadout.textContent || "" : "";
+    if (!text) {
+      return;
+    }
+    ctx.save();
+    ctx.font = "600 13px Inter, system-ui, sans-serif";
+    const textWidth = ctx.measureText(text).width;
+    const boxWidth = textWidth + 20;
+    const boxHeight = 26;
+    const boxX = margins.left + plotWidth() - boxWidth - 8;
+    const boxY = Math.max(4, margins.top - boxHeight + 2);
+
+    ctx.fillStyle = "rgba(8, 14, 26, 0.9)";
+    ctx.strokeStyle = "rgba(111, 214, 255, 0.34)";
+    ctx.lineWidth = 1.15;
+    ctx.beginPath();
+    ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(240, 247, 255, 0.96)";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, boxX + 10, boxY + boxHeight / 2);
     ctx.restore();
   }
 
@@ -4916,6 +4944,7 @@
     drawRasterSelectionOverlay();
     drawSelectedScoreOverlay();
     drawScoreRepeatPreview();
+    drawCursorReadoutOverlay();
     drawPhaseDiagnosticsOverlay(diagnostics);
     drawPlayhead();
     drawNoteGhostPreview();
