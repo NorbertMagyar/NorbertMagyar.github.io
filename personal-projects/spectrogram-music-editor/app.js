@@ -4410,14 +4410,24 @@
     if (!snapped) {
       return null;
     }
-    const pointerSec = snapped.startSec;
+    let referenceSec = snapped.startSec;
     const excludedIndices = new Set();
     if (state.scoreEditMode === "move-selection") {
       for (const index of state.scoreEditSelectionIndices || []) {
         excludedIndices.add(index);
       }
+      const selectionNotes = (state.scoreEditSelectionIndices || [])
+        .map((index) => state.scoreEvents[index])
+        .filter(Boolean);
+      if (selectionNotes.length) {
+        referenceSec = Math.min(...selectionNotes.map((note) => note.startSec));
+      }
     } else if (state.scoreEditIndex >= 0) {
       excludedIndices.add(state.scoreEditIndex);
+      const editedNote = state.scoreEvents[state.scoreEditIndex];
+      if (editedNote) {
+        referenceSec = editedNote.startSec;
+      }
     }
 
     let closestEndSec = 0;
@@ -4428,12 +4438,12 @@
       }
       const note = state.scoreEvents[i];
       const endSec = note.startSec + note.durationSec;
-      if (endSec <= pointerSec + 1e-6 && (!found || endSec > closestEndSec)) {
+      if (endSec <= referenceSec + 1e-6 && (!found || endSec > closestEndSec)) {
         closestEndSec = endSec;
         found = true;
       }
     }
-    const gapSec = Math.max(0, pointerSec - closestEndSec);
+    const gapSec = Math.max(0, referenceSec - closestEndSec);
     const gapBeats = gapSec / scoreBeatSeconds();
     return {
       point: snapped,
