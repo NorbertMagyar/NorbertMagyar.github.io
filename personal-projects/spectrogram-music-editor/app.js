@@ -112,6 +112,7 @@
     const loopButton = document.getElementById("loop-btn");
     const renderButton = document.getElementById("render-btn");
     const exportButton = document.getElementById("export-btn");
+    const resetViewportButton = document.getElementById("reset-viewport-btn");
     const projectSaveButton = document.getElementById("project-save-btn");
     const projectLoadButton = document.getElementById("project-load-btn");
     const projectLoadInput = document.getElementById("project-load-input");
@@ -10746,8 +10747,13 @@
     });
     stopButton.addEventListener("click", () => {
       stopPlayback("Playback stopped.");
-      resetViewportToEditorDefault();
     });
+    if (resetViewportButton) {
+      resetViewportButton.addEventListener("click", () => {
+        resetViewportToEditorDefault();
+        setStatus("Viewport reset to the default editor view.");
+      });
+    }
     renderButton.addEventListener("click", () => renderIfNeeded("audio preview"));
     exportButton.addEventListener("click", exportWav);
     if (undoButton) {
@@ -11016,6 +11022,12 @@
 
       if (event.key.toLowerCase() === "s") {
         stopPlayback("Playback stopped.");
+        return;
+      }
+
+      if (event.key.toLowerCase() === "x") {
+        resetViewportToEditorDefault();
+        setStatus("Viewport reset to the default editor view.");
         return;
       }
 

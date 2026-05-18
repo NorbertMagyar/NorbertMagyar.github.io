@@ -361,6 +361,7 @@
                     <span class="help-tooltip-row"><strong>Scroll</strong> in repeat mode: change the spacing between repeats</span>
                     <span class="help-tooltip-row"><strong>Space</strong> Play or pause</span>
                     <span class="help-tooltip-row"><strong>S</strong> Stop playback</span>
+                    <span class="help-tooltip-row"><strong>X</strong> Reset the viewport to the default editor view</span>
                     <span class="help-tooltip-row"><strong>C</strong> Clear the drawing layer</span>
                     <span class="help-tooltip-row"><strong>G</strong> Toggle the grid</span>
                     <span class="help-tooltip-row"><strong>Ctrl+C</strong> or <strong>Cmd+C</strong> Copy the hovered item or current selection</span>
@@ -564,6 +565,13 @@
                         <svg viewBox="0 0 24 24"><path d="M12 4v10"/><path d="M8.5 10.5L12 14l3.5-3.5"/><path d="M5 18h14"/></svg>
                       </span>
                       <span class="sr-only">Export WAV</span>
+                    </button>
+                    <button id="reset-viewport-btn" type="button" class="action-btn transport-btn" aria-label="Reset viewport" title="Reset viewport">
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M6 7.5h12"/><path d="M6 16.5h12"/><path d="M9 5 6 7.5 9 10"/><path d="M15 14l3 2.5-3 2.5"/></svg>
+                      </span>
+                      <span class="transport-shortcut-badge" aria-hidden="true">X</span>
+                      <span class="sr-only">Reset viewport</span>
                     </button>
                     <button id="undo-btn" type="button" class="action-btn transport-btn" aria-label="Undo" title="Undo">
                       <span class="tool-icon" aria-hidden="true">
