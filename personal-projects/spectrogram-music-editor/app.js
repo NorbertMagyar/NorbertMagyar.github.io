@@ -58,18 +58,25 @@
         kind: "splendid-piano"
       },
       "violin-samples": {
-        label: "Violin samples",
+        label: "Violin samples (MusyngKite)",
         kind: "soundfont",
         instrument: "violin",
         kit: "MusyngKite",
-        loadLoopData: true
+        loadLoopData: false
+      },
+      "violin-fluidr3-samples": {
+        label: "Violin samples (FluidR3_GM)",
+        kind: "soundfont",
+        instrument: "violin",
+        kit: "FluidR3_GM",
+        loadLoopData: false
       },
       "cello-samples": {
         label: "Cello samples",
         kind: "soundfont",
         instrument: "cello",
         kit: "MusyngKite",
-        loadLoopData: true
+        loadLoopData: false
       },
       "steel-guitar-samples": {
         label: "Steel guitar samples",
