@@ -964,11 +964,20 @@ select:hover {
   background: rgba(8, 14, 26, 0.72);
 }
 
+.timeline-inline-label {
+  padding: 0.26rem 0.78rem 0.02rem;
+  color: #c7d4e8;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.1;
+  text-align: left;
+}
+
 .timeline-track {
   position: relative;
   height: 4.25rem;
   overflow: hidden;
-  margin: 0.34rem 0.72rem 0.42rem;
+  margin: 0.16rem 0.72rem 0.42rem;
   border-radius: 16px;
   background:
     linear-gradient(180deg, rgba(17, 26, 46, 0.95), rgba(8, 13, 24, 0.98));
