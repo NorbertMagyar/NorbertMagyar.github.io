@@ -4,19 +4,19 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Norbert Magyar | SoundPainter</title>
-  <meta name="description" content="A browser-based spectrogram music editor where painted shapes become playable sound." />
+  <meta name="description" content="A browser-based spectrogram and score-sheet music editor with freehand drawing, note editing, tabs, layers, MIDI or MusicXML import, sample backends, and soundpaint.json project files." />
   <link rel="canonical" href="https://norbertmagyar.github.io/personal-projects/spectrogram-music-editor/" />
   <meta property="og:type" content="article" />
   <meta property="og:site_name" content="Norbert Magyar" />
   <meta property="og:title" content="Norbert Magyar | SoundPainter" />
-  <meta property="og:description" content="Paint a time-frequency map in the browser and hear it as synthesized sound." />
+  <meta property="og:description" content="Paint spectra, edit notes on piano, violin, or guitar score sheets, layer ideas across tabs, and play them back with procedural or sampled instruments in the browser." />
   <meta property="og:url" content="https://norbertmagyar.github.io/personal-projects/spectrogram-music-editor/" />
   <meta property="og:image" content="https://norbertmagyar.github.io/photo2.jpg" />
   <meta property="article:published_time" content="2026-05-16" />
-  <meta property="article:modified_time" content="2026-05-16" />
+  <meta property="article:modified_time" content="2026-05-19" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Norbert Magyar | SoundPainter" />
-  <meta name="twitter:description" content="Paint a time-frequency map in the browser and hear it as synthesized sound." />
+  <meta name="twitter:description" content="Paint spectra, edit score notes, import MIDI or MusicXML, organize layers in tabs, and render in-browser with procedural or sampled instruments." />
   <meta name="twitter:image" content="https://norbertmagyar.github.io/photo2.jpg" />
   <script type="application/ld+json">
   {
@@ -31,7 +31,7 @@
       "url": "https://norbertmagyar.github.io/"
     },
     "url": "https://norbertmagyar.github.io/personal-projects/spectrogram-music-editor/",
-    "description": "A browser-based spectrogram music editor where painted shapes become playable sound.",
+    "description": "A browser-based spectrogram and score-sheet music editor with freehand drawing, note editing, tabs, layers, MIDI or MusicXML import, sample backends, and soundpaint.json project files.",
     "inLanguage": "en"
   }
   </script>
@@ -111,31 +111,34 @@
         <div class="post-body">
           <br>
           <p>
-            This is a browser-based music sketchpad built around a simple idea: paint sound directly on a
-            time-frequency plane and listen to the result. The vertical axis represents frequency, the horizontal
-            axis represents time, and brightness maps to amplitude. Draw a diagonal line and you get a sweep.
-            Paint several bands and you get chords, textures, and noisy clouds.
+            SoundPainter started as a browser-based spectrogram sketchpad, but it has grown into a hybrid editor:
+            you can still paint sound directly on a time-frequency plane, and you can also switch into dedicated
+            guitar, violin, or grand-piano score-sheet editors for snapped note editing. The vertical axis represents
+            frequency, the horizontal axis represents time, and brightness maps to amplitude.
           </p>
           <p>
-            The app supports several paint-like tools, keyboard shortcuts, and in-browser playback. Everything
-            runs locally in JavaScript through the Web Audio API, so nothing needs to be installed.
+            The current version supports freehand drawing tools, note creation and selection workflows, editor tabs,
+            layers, bundled score and bass presets, MIDI or MusicXML import, `soundpaint.json` project save/load,
+            WAV export, and sample-backed note playback for piano, violin, cello, and guitar. Everything runs locally
+            in JavaScript through the Web Audio API, so nothing needs to be installed beyond a browser.
           </p>
           <br>
           <section class="spectro-hero" aria-label="Spectrogram editor overview">
             <div>
-              <p class="hero-kicker">Paint sound, then play it.</p>
-              <h2>Draw frequency over time</h2>
+              <p class="hero-kicker">Paint sound, score notes, and layered ideas.</p>
+              <h2>Draw, import, edit, and render in one browser editor</h2>
               <p class="hero-copy">
-                Use the brush for freehand lines, spray for grainy textures, gaussian for swelling spectral peaks,
-                line for controlled sweeps, and erase to cut holes in the spectrum. Full note manipulation supported!
+                Use the brush for freehand spectra, switch to score-sheet mode for snapped notes, organize work in
+                tabs and layers, and choose between procedural synthesis and sample-backed note playback. The same
+                editor can handle rough spectral sketches, imported MIDI pieces, and mixed note-plus-texture ideas.
               </p>
             </div>
             <div class="hero-chip-row" aria-label="Feature summary">
-              <span class="hero-chip">Web Audio playback</span>
-              <span class="hero-chip">Brush / Spray / Gaussian / Line / Erase</span>
-              <span class="hero-chip">WAV export</span>
-              <span class="hero-chip">Keyboard shortcuts</span>
-              <span class="hero-chip">Note manipulation</span>
+              <span class="hero-chip">Tabs and layers</span>
+              <span class="hero-chip">Spectrogram + score-sheet editors</span>
+              <span class="hero-chip">MIDI / MusicXML import</span>
+              <span class="hero-chip">Piano / violin / cello / guitar samples</span>
+              <span class="hero-chip">soundpaint.json + WAV export</span>
             </div>
           </section>
 
