@@ -2776,6 +2776,11 @@
       || Boolean(state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection));
   }
 
+  function hasEditorSelection() {
+    return normalizeSelectedScoreIndices().length > 0
+      || Boolean(state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection));
+  }
+
   function resetScoreRepeatMode() {
     state.scoreRepeatMode = false;
     state.scoreRepeatCountText = "1";
@@ -10943,6 +10948,17 @@
             return;
           }
         }
+      }
+      if (
+        event.key === "Escape"
+        && ["note", "select"].includes(state.tool)
+        && hasEditorSelection()
+      ) {
+        event.preventDefault();
+        clearEditorSelection();
+        setStatus("Selection cleared.");
+        renderCanvas();
+        return;
       }
       if (event.key === "F2") {
         const target = event.target;
