@@ -24,8 +24,8 @@
 
   try {
     const GRID_COLS = 2880;
-    const VIEW_COLS = 288;
-    const COLS_PER_SECOND = 48;
+    const COLS_PER_SECOND = 200;
+    const VIEW_COLS = 300;
     const GRID_ROWS = 96;
     const TAU = Math.PI * 2;
     const RENDER_SAMPLE_RATE = 24000;
@@ -34,7 +34,7 @@
     const HYBRID_GRIFFIN_LIM_ITERATIONS = 8;
     const STFT_SIZE = 512;
     const STFT_HOP = 128;
-    const MIN_VIEW_COLS = 24;
+    const MIN_VIEW_COLS = COLS_PER_SECOND;
     const MAX_UNDO_STEPS = 16;
     const RENDER_YIELD_INTERVAL_MS = 28;
     const RENDER_MIX_CHUNK_SIZE = 131072;
@@ -207,8 +207,9 @@
 
     const pixelImage = offCtx.createImageData(VIEW_COLS, GRID_ROWS);
     const timelineOverviewCtx = timelineOverview ? timelineOverview.getContext("2d", { willReadFrequently: true }) : null;
-    let drawData = new Float32Array(GRID_COLS * GRID_ROWS);
-    let basslineData = new Float32Array(GRID_COLS * GRID_ROWS);
+    let rasterColCount = Math.max(VIEW_COLS, Math.round(durationSeconds() * COLS_PER_SECOND));
+    let drawData = new Float32Array(rasterColCount * GRID_ROWS);
+    let basslineData = new Float32Array(rasterColCount * GRID_ROWS);
     let bassEvents = [];
     let scoreEventsRef = [];
     let nextTabId = 1;
@@ -1279,7 +1280,10 @@
     if (!(oldMin > 0 && oldMax > oldMin && newMin > 0 && newMax > newMin)) {
       return;
     }
-    for (let col = 0; col < GRID_COLS; col += 1) {
+    const sourceCols = Math.max(0, Math.floor(source.length / GRID_ROWS));
+    const targetCols = Math.max(0, Math.floor(target.length / GRID_ROWS));
+    const cols = Math.min(sourceCols, targetCols, trackColCount());
+    for (let col = 0; col < cols; col += 1) {
       for (let row = 0; row < GRID_ROWS; row += 1) {
         const targetFreq = frequencyForRowInRange(row, newMin, newMax, newMode);
         const sourceRow = rowForFrequencyInRange(targetFreq, oldMin, oldMax, oldMode);
@@ -1380,8 +1384,8 @@
       id: `layer-${nextLayerId++}`,
       name,
       visible: true,
-      drawData: new Float32Array(GRID_COLS * GRID_ROWS),
-      basslineData: new Float32Array(GRID_COLS * GRID_ROWS),
+      drawData: new Float32Array(trackColCount() * GRID_ROWS),
+      basslineData: new Float32Array(trackColCount() * GRID_ROWS),
       bassEvents: [],
       scoreEvents: []
     };
@@ -1622,8 +1626,8 @@
     const visibleLayers = visibleLayersInCurrentTab();
     if (visibleLayers.length === 0) {
       const value = {
-        drawData: new Float32Array(GRID_COLS * GRID_ROWS),
-        basslineData: new Float32Array(GRID_COLS * GRID_ROWS),
+        drawData: new Float32Array(trackColCount() * GRID_ROWS),
+        basslineData: new Float32Array(trackColCount() * GRID_ROWS),
         bassEvents: [],
         scoreEvents: []
       };
@@ -1641,14 +1645,14 @@
       state.compositeLayerCache = { key: cacheKey, value };
       return value;
     }
-    const compositeDraw = new Float32Array(GRID_COLS * GRID_ROWS);
-    const compositeBass = new Float32Array(GRID_COLS * GRID_ROWS);
+    const compositeDraw = new Float32Array(trackColCount() * GRID_ROWS);
+    const compositeBass = new Float32Array(trackColCount() * GRID_ROWS);
     const compositeBassEvents = [];
     const compositeScoreEvents = [];
     for (const layer of visibleLayers) {
       for (let i = 0; i < compositeDraw.length; i += 1) {
-        compositeDraw[i] = clamp(compositeDraw[i] + layer.drawData[i], 0, 1);
-        compositeBass[i] = clamp(compositeBass[i] + layer.basslineData[i], 0, 1);
+        compositeDraw[i] = clamp(compositeDraw[i] + (layer.drawData[i] || 0), 0, 1);
+        compositeBass[i] = clamp(compositeBass[i] + (layer.basslineData[i] || 0), 0, 1);
       }
       compositeBassEvents.push(...cloneEventList(layer.bassEvents || []));
       compositeScoreEvents.push(...cloneEventList(layer.scoreEvents || []));
@@ -2164,7 +2168,7 @@
   }
 
   function gridIndex(col, row) {
-    return row * GRID_COLS + col;
+    return row * rasterColCount + col;
   }
 
   function setStatus(message) {
@@ -2306,7 +2310,49 @@
   }
 
   function trackColCount() {
-    return clamp(Math.round(durationSeconds() * COLS_PER_SECOND), VIEW_COLS, GRID_COLS);
+    return Math.max(VIEW_COLS, Math.round(durationSeconds() * COLS_PER_SECOND));
+  }
+
+  function resizeLayerRasterData(data, requiredCols) {
+    const currentCols = Math.max(0, Math.floor(data.length / GRID_ROWS));
+    if (currentCols === requiredCols) {
+      return data;
+    }
+    const nextData = new Float32Array(requiredCols * GRID_ROWS);
+    const copyCols = Math.min(currentCols, requiredCols);
+    for (let row = 0; row < GRID_ROWS; row += 1) {
+      const oldOffset = row * currentCols;
+      const nextOffset = row * requiredCols;
+      nextData.set(data.subarray(oldOffset, oldOffset + copyCols), nextOffset);
+    }
+    return nextData;
+  }
+
+  function ensureRasterCapacity() {
+    const requiredCols = trackColCount();
+    if (requiredCols === rasterColCount) {
+      return;
+    }
+    const tab = currentTabRecord();
+    const activeLayerId = state.activeLayerId;
+    if (tab) {
+      for (const layer of tab.layers) {
+        layer.drawData = resizeLayerRasterData(layer.drawData, requiredCols);
+        layer.basslineData = resizeLayerRasterData(layer.basslineData, requiredCols);
+      }
+    }
+    drawData = resizeLayerRasterData(drawData, requiredCols);
+    basslineData = resizeLayerRasterData(basslineData, requiredCols);
+    rasterColCount = requiredCols;
+    if (tab) {
+      const activeLayer = tab.layers.find((layer) => layer.id === activeLayerId) || tab.layers[0];
+      if (activeLayer) {
+        drawData = activeLayer.drawData;
+        basslineData = activeLayer.basslineData;
+      }
+    }
+    invalidateCompositeLayerCache();
+    state.frequencyZoomReference = null;
   }
 
   function clampViewSpan() {
@@ -3924,6 +3970,7 @@
   }
 
   function updateTimelineOverview() {
+    ensureRasterCapacity();
     if (!timelineOverview || !timelineOverviewCtx || !timelineTrack) {
       return;
     }
@@ -4916,6 +4963,7 @@
   }
 
   function renderCanvas() {
+    ensureRasterCapacity();
     const diagnostics = getDiagnosticsSnapshot();
     repaintOffscreen();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -4991,6 +5039,7 @@
   }
 
   function setAmplitude(layer, col, row, delta) {
+    ensureRasterCapacity();
     if (col < 0 || row < 0 || col >= trackColCount() || row >= GRID_ROWS) {
       return;
     }
