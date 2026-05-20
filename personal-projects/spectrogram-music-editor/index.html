@@ -341,44 +341,73 @@
                     <p class="card-note">Bundled bass imports now live under Preset. Tempo is now shared from the Synthesis menu and is applied automatically when importing MIDI or MusicXML scores that provide it.</p>
                   </div>
                 </details>
+                <details class="menu-dropdown">
+                  <summary class="menu-trigger">Help</summary>
+                  <div class="menu-panel menu-panel-wide help-panel" role="group" aria-label="Help menu">
+                    <section class="help-section">
+                      <h4>Navigation and Playback</h4>
+                      <div class="help-grid">
+                        <span><strong>Space</strong></span><span>Play or pause</span>
+                        <span><strong>S</strong></span><span>Stop playback</span>
+                        <span><strong>X</strong></span><span>Reset the viewport to the default editor view</span>
+                        <span><strong>Scroll</strong></span><span>Zoom in time</span>
+                        <span><strong>Ctrl + Scroll</strong></span><span>Zoom in frequency</span>
+                        <span><strong>G</strong></span><span>Toggle the grid</span>
+                      </div>
+                    </section>
+
+                    <section class="help-section">
+                      <h4>Tools</h4>
+                      <div class="help-grid">
+                        <span><strong>V</strong></span><span>Select the Time tool for time positioning</span>
+                        <span><strong>A</strong></span><span>Select the Select tool in score-sheet mode</span>
+                        <span><strong>N</strong></span><span>Select the Note tool in guitar, violin, or piano score-sheet view</span>
+                        <span><strong>1-5</strong></span><span>Select Brush, Spray, Gaussian, Line, or Erase</span>
+                        <span><strong>[</strong> / <strong>]</strong></span><span>Change brush size</span>
+                        <span><strong>-</strong> / <strong>=</strong></span><span>Change freehand strength</span>
+                        <span><strong>Shift</strong> + drag</span><span>Lock the Line tool or note movement to horizontal or vertical</span>
+                      </div>
+                    </section>
+
+                    <section class="help-section">
+                      <h4>Notes and Selections</h4>
+                      <div class="help-grid">
+                        <span><strong>Shift + Scroll</strong></span><span>Change the preview note length in the Note tool</span>
+                        <span><strong>Ctrl+Click</strong></span><span>Add or remove a note from the current selection</span>
+                        <span><strong>Ctrl+Drag</strong></span><span>Duplicate a note or selected note group and drag the copy</span>
+                        <span><strong>Delete</strong></span><span>Delete the current note or freehand selection</span>
+                        <span><strong>Escape</strong></span><span>Clear the current note or freehand selection</span>
+                        <span><strong>F2</strong></span><span>Rename the hovered tab or layer</span>
+                      </div>
+                    </section>
+
+                    <section class="help-section">
+                      <h4>Clipboard and Undo</h4>
+                      <div class="help-grid">
+                        <span><strong>Ctrl+C</strong></span><span>Copy the hovered item or current selection</span>
+                        <span><strong>Ctrl+X</strong></span><span>Cut the hovered item or current selection</span>
+                        <span><strong>Ctrl+V</strong></span><span>Paste copied notes or freehand regions</span>
+                        <span><strong>Ctrl+D</strong></span><span>Duplicate the current note or selection to the right</span>
+                        <span><strong>Ctrl+Z</strong></span><span>Undo the last gesture</span>
+                        <span><strong>Ctrl+Shift+Z</strong></span><span>Redo the last undone gesture</span>
+                      </div>
+                    </section>
+
+                    <section class="help-section">
+                      <h4>Repeat Mode</h4>
+                      <div class="help-grid">
+                        <span><strong>R</strong></span><span>Enter repeat mode for the current note or freehand selection</span>
+                        <span><strong>R</strong> again</span><span>Commit the current repeat preview</span>
+                        <span><strong>0-9</strong></span><span>Set the repeat count; <strong>0</strong> means repeat to the end of the track</span>
+                        <span><strong>Scroll</strong></span><span>Change spacing while repeat mode is active</span>
+                        <span><strong>Escape</strong></span><span>Cancel repeat mode</span>
+                      </div>
+                    </section>
+
+                    <p class="card-note">On macOS, <strong>Cmd</strong> can be used instead of <strong>Ctrl</strong> for the copy, paste, cut, duplicate, undo, and redo shortcuts.</p>
+                  </div>
+                </details>
                 </div>
-                <span
-                  class="toolbar-help toolbar-shortcuts-help menubar-shortcuts-help"
-                  tabindex="0"
-                  aria-label="Keyboard shortcuts"
-                >
-                  <span class="help-badge" aria-hidden="true">?</span>
-                  <span class="toolbar-help-text">Shortcuts</span>
-                  <span class="help-tooltip" role="tooltip">
-                    <span class="help-tooltip-row"><strong>V</strong> Select the Time tool for time positioning</span>
-                    <span class="help-tooltip-row"><strong>1-5</strong> Select Brush, Spray, Gaussian, Line, or Erase</span>
-                    <span class="help-tooltip-row"><strong>N</strong> Select the Note tool in guitar, violin, or piano score-sheet view</span>
-                    <span class="help-tooltip-row"><strong>A</strong> Select the note-selection tool in guitar, violin, or piano score-sheet view</span>
-                    <span class="help-tooltip-row"><strong>[</strong> or <strong>]</strong> Change brush size</span>
-                    <span class="help-tooltip-row"><strong>-</strong> or <strong>=</strong> Change strength</span>
-                    <span class="help-tooltip-row"><strong>Scroll</strong> Zoom in time</span>
-                    <span class="help-tooltip-row"><strong>Ctrl + Scroll</strong> Zoom in frequency</span>
-                    <span class="help-tooltip-row"><strong>Shift + Scroll</strong> Change the preview note length in the Note tool</span>
-                    <span class="help-tooltip-row"><strong>R</strong> Enter repeat mode for the selected notes, then press <strong>R</strong> again to commit</span>
-                    <span class="help-tooltip-row"><strong>0-9</strong> Set the repeat count in repeat mode; <strong>0</strong> means repeat to the end of the track</span>
-                    <span class="help-tooltip-row"><strong>Scroll</strong> in repeat mode: change the spacing between repeats</span>
-                    <span class="help-tooltip-row"><strong>Space</strong> Play or pause</span>
-                    <span class="help-tooltip-row"><strong>S</strong> Stop playback</span>
-                    <span class="help-tooltip-row"><strong>X</strong> Reset the viewport to the default editor view</span>
-                    <span class="help-tooltip-row"><strong>C</strong> Clear the drawing layer</span>
-                    <span class="help-tooltip-row"><strong>G</strong> Toggle the grid</span>
-                    <span class="help-tooltip-row"><strong>Ctrl+C</strong> or <strong>Cmd+C</strong> Copy the hovered item or current selection</span>
-                    <span class="help-tooltip-row"><strong>Ctrl+X</strong> or <strong>Cmd+X</strong> Cut the hovered item or current selection</span>
-                    <span class="help-tooltip-row"><strong>Ctrl+V</strong> or <strong>Cmd+V</strong> Paste the copied note(s) or freehand region</span>
-                    <span class="help-tooltip-row"><strong>Ctrl+D</strong> or <strong>Cmd+D</strong> Duplicate the current note or selection to the right</span>
-                    <span class="help-tooltip-row"><strong>Ctrl+Click</strong> or <strong>Cmd+Click</strong> Add or remove a note from the selection</span>
-                    <span class="help-tooltip-row"><strong>Ctrl+Drag</strong> or <strong>Cmd+Drag</strong> Duplicate a note and drag the copy</span>
-                    <span class="help-tooltip-row"><strong>Ctrl+Z</strong> or <strong>Cmd+Z</strong> Undo the last drag</span>
-                    <span class="help-tooltip-row"><strong>Ctrl+Shift+Z</strong> or <strong>Cmd+Shift+Z</strong> Redo the last undone drag</span>
-                    <span class="help-tooltip-row"><strong>Delete</strong> or <strong>Backspace</strong> Delete the current selection</span>
-                    <span class="help-tooltip-row"><strong>Shift</strong> with Line tool: snap horizontal or vertical</span>
-                  </span>
-                </span>
               </div>
               <div class="surface-toolbar">
                 <div class="button-row tool-row" role="toolbar" aria-label="Tool selection">

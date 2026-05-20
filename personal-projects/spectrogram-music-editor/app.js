@@ -285,6 +285,7 @@
       scoreEditOriginalSelectionNotes: null,
       scoreCtrlPendingHit: null,
       scoreEditStartPoint: null,
+      scoreEditStartClient: null,
       scoreEditStartMidi: null,
       dirty: true,
       renderedBuffer: null,
@@ -2593,6 +2594,15 @@
       xStrength = clamp((clientX - (bounds.right - zoneX)) / zoneX, 0, 1);
     }
 
+    if (xDir < 0 && state.viewOffsetCol <= 0.001) {
+      xDir = 0;
+      xStrength = 0;
+    }
+    if (xDir > 0 && state.viewOffsetCol >= maxViewOffset() - 0.001) {
+      xDir = 0;
+      xStrength = 0;
+    }
+
     if (!xDir) {
       return null;
     }
@@ -2731,6 +2741,31 @@
       endCol,
       minRow: Math.min(topRow, bottomRow),
       maxRow: Math.max(topRow, bottomRow)
+    };
+  }
+
+  function scoreMoveLockedPoint(point, shiftKey) {
+    if (
+      !point
+      || !shiftKey
+      || !state.scoreEditStartPoint
+      || !state.scoreEditStartClient
+      || !state.currentPointerClient
+      || (state.scoreEditMode !== "move" && state.scoreEditMode !== "move-selection")
+    ) {
+      return point;
+    }
+    const dx = Math.abs(state.currentPointerClient.x - state.scoreEditStartClient.x);
+    const dy = Math.abs(state.currentPointerClient.y - state.scoreEditStartClient.y);
+    if (dx > dy) {
+      return {
+        ...point,
+        row: state.scoreEditStartPoint.row
+      };
+    }
+    return {
+      ...point,
+      col: state.scoreEditStartPoint.col
     };
   }
 
@@ -3359,7 +3394,7 @@
     return dirtyLayers.size > 0;
   }
 
-  function applyScoreNoteEdit(point) {
+  function applyScoreNoteEdit(point, shiftKey = false) {
     if (
       !point
       || (
@@ -3373,6 +3408,7 @@
     const minDuration = minimumScoreNoteDurationSec();
     const trackDuration = durationSeconds();
     let nextNote = { ...original };
+    const workingPoint = scoreMoveLockedPoint(point, shiftKey);
 
     if (state.scoreEditMode === "move-selection") {
       const originalNotes = Array.isArray(state.scoreEditOriginalSelectionNotes) ? state.scoreEditOriginalSelectionNotes : [];
@@ -3381,9 +3417,9 @@
         return false;
       }
       const deltaSec =
-        quantizeScoreTimeSec(timeFromCol(point.col), { clampEnd: false })
+        quantizeScoreTimeSec(timeFromCol(workingPoint.col), { clampEnd: false })
         - quantizeScoreTimeSec(timeFromCol(state.scoreEditStartPoint.col), { clampEnd: false });
-      const nextMidi = nearestScoreMidiForPoint(point);
+      const nextMidi = nearestScoreMidiForPoint(workingPoint);
       const deltaMidi = nextMidi === null || state.scoreEditStartMidi === null ? 0 : nextMidi - state.scoreEditStartMidi;
       const profile = currentScoreProfile();
       const originalMinStart = Math.min(...originalNotes.map((note) => note.startSec));
@@ -3427,9 +3463,9 @@
 
     if (state.scoreEditMode === "move") {
       const deltaSec =
-        quantizeScoreTimeSec(timeFromCol(point.col), { clampEnd: false })
+        quantizeScoreTimeSec(timeFromCol(workingPoint.col), { clampEnd: false })
         - quantizeScoreTimeSec(timeFromCol(state.scoreEditStartPoint.col), { clampEnd: false });
-      const nextMidi = nearestScoreMidiForPoint(point);
+      const nextMidi = nearestScoreMidiForPoint(workingPoint);
       const deltaMidi = nextMidi === null || state.scoreEditStartMidi === null ? 0 : nextMidi - state.scoreEditStartMidi;
       const duration = original.durationSec;
       nextNote.startSec = clamp(original.startSec + deltaSec, 0, Math.max(0, trackDuration - duration));
@@ -4638,6 +4674,82 @@
     ctx.restore();
   }
 
+  function currentScoreMoveGuide() {
+    if (!state.scoreEditStartPoint || !state.currentPointer) {
+      return null;
+    }
+    if (state.scoreEditMode === "move" && state.scoreEditOriginalNote && state.scoreEditIndex >= 0) {
+      const currentNote = state.scoreEvents[state.scoreEditIndex];
+      if (!currentNote) {
+        return null;
+      }
+      const originalGeometry = scoreNoteGeometry(state.scoreEditOriginalNote);
+      const currentGeometry = scoreNoteGeometry(currentNote);
+      return [{
+        from: {
+          col: originalGeometry.startCol + Math.max(0.02, originalGeometry.endCol - originalGeometry.startCol) * 0.5,
+          row: (originalGeometry.minRow + originalGeometry.maxRow) * 0.5
+        },
+        to: {
+          col: currentGeometry.startCol + Math.max(0.02, currentGeometry.endCol - currentGeometry.startCol) * 0.5,
+          row: (currentGeometry.minRow + currentGeometry.maxRow) * 0.5
+        }
+      }];
+    }
+    if (state.scoreEditMode === "move-selection" && Array.isArray(state.scoreEditOriginalSelectionNotes) && state.scoreEditSelectionIndices.length) {
+      const originalNotes = state.scoreEditOriginalSelectionNotes;
+      const currentNotes = state.scoreEditSelectionIndices
+        .map((index) => state.scoreEvents[index])
+        .filter(Boolean);
+      if (!originalNotes.length || !currentNotes.length) {
+        return null;
+      }
+      const guides = [];
+      const count = Math.min(originalNotes.length, currentNotes.length);
+      for (let i = 0; i < count; i += 1) {
+        const originalNote = originalNotes[i];
+        const currentNote = currentNotes[i];
+        if (!originalNote || !currentNote) {
+          continue;
+        }
+        const originalGeometry = scoreNoteGeometry(originalNote);
+        const currentGeometry = scoreNoteGeometry(currentNote);
+        guides.push({
+          from: {
+            col: originalGeometry.startCol + Math.max(0.02, originalGeometry.endCol - originalGeometry.startCol) * 0.5,
+            row: (originalGeometry.minRow + originalGeometry.maxRow) * 0.5
+          },
+          to: {
+            col: currentGeometry.startCol + Math.max(0.02, currentGeometry.endCol - currentGeometry.startCol) * 0.5,
+            row: (currentGeometry.minRow + currentGeometry.maxRow) * 0.5
+          }
+        });
+      }
+      return guides.length ? guides : null;
+    }
+    return null;
+  }
+
+  function drawScoreMoveGuide() {
+    const guides = currentScoreMoveGuide();
+    if (!guides || !guides.length) {
+      return;
+    }
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 205, 128, 0.9)";
+    ctx.lineWidth = 1.8;
+    ctx.setLineDash([7, 5]);
+    for (const guide of guides) {
+      const from = gridToCanvas(guide.from.col, guide.from.row);
+      const to = gridToCanvas(guide.to.col, guide.to.row);
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   function currentScoreTimingHint() {
     if (!isScoreSheetMode() || !state.currentPointer || (state.tool !== "note" && !state.scoreEditMode)) {
       return null;
@@ -5185,6 +5297,7 @@
     drawPlayhead();
     drawNoteGhostPreview();
     drawLinePreview();
+    drawScoreMoveGuide();
     drawScoreTimingHint();
     drawScoreSelectionMarquee();
     drawPointerPreview();
@@ -10155,6 +10268,8 @@
         state.pointerInside = true;
         state.scoreCtrlPendingHit = {
           point,
+          clientX: event.clientX,
+          clientY: event.clientY,
           index: scoreHit.index,
           sourceSelectionIndices: normalizeSelectedScoreIndices().includes(scoreHit.index)
             ? normalizeSelectedScoreIndices().slice()
@@ -10190,6 +10305,7 @@
         state.scoreEditSelectionIndices = normalizeSelectedScoreIndices().slice();
         state.scoreEditOriginalSelectionNotes = state.scoreEditSelectionIndices.map((index) => ({ ...state.scoreEvents[index] }));
         state.scoreEditStartPoint = point;
+        state.scoreEditStartClient = { x: event.clientX, y: event.clientY };
         state.scoreEditStartMidi = nearestScoreMidiForPoint(point);
         updateCursorReadout(point);
         canvas.setPointerCapture(event.pointerId);
@@ -10227,6 +10343,8 @@
         if (event.ctrlKey || event.metaKey) {
           state.scoreCtrlPendingHit = {
             point,
+            clientX: event.clientX,
+            clientY: event.clientY,
             index: scoreHit.index,
             sourceSelectionIndices: normalizeSelectedScoreIndices().includes(scoreHit.index)
               ? normalizeSelectedScoreIndices().slice()
@@ -10238,6 +10356,7 @@
           state.scoreEditSelectionIndices = normalizeSelectedScoreIndices().slice();
           state.scoreEditOriginalSelectionNotes = state.scoreEditSelectionIndices.map((index) => ({ ...state.scoreEvents[index] }));
           state.scoreEditStartPoint = point;
+          state.scoreEditStartClient = { x: event.clientX, y: event.clientY };
           state.scoreEditStartMidi = nearestScoreMidiForPoint(point);
         } else {
           beginUndoGesture();
@@ -10245,6 +10364,7 @@
           state.scoreEditIndex = scoreHit.index;
           state.scoreEditOriginalNote = { ...scoreHit.note };
           state.scoreEditStartPoint = point;
+          state.scoreEditStartClient = { x: event.clientX, y: event.clientY };
           state.scoreEditStartMidi = nearestScoreMidiForPoint(point);
         }
         updateCursorReadout(scorePoint || point);
@@ -10290,6 +10410,7 @@
         state.scoreEditIndex = -1;
         state.scoreEditOriginalNote = null;
         state.scoreEditStartPoint = null;
+        state.scoreEditStartClient = null;
         state.scoreEditStartMidi = null;
       }
       renderCanvas();
@@ -10363,9 +10484,10 @@
             }
           }
           state.scoreEditStartPoint = pending.point;
+          state.scoreEditStartClient = { x: pending.clientX, y: pending.clientY };
           state.scoreEditStartMidi = nearestScoreMidiForPoint(pending.point);
           state.scoreCtrlPendingHit = null;
-          if (state.scoreEditMode && applyScoreNoteEdit(point)) {
+          if (state.scoreEditMode && applyScoreNoteEdit(point, event.shiftKey)) {
             if (state.scoreEditMode === "move-selection") {
               const originalSpan = scoreNotesSpan(state.scoreEditOriginalSelectionNotes || []);
               const currentSpan = scoreNotesSpan(
@@ -10398,7 +10520,7 @@
         applyRasterSelectionMove(point, false);
       } else if (state.scoreEditMode) {
         const originalNote = state.scoreEditOriginalNote;
-        if (applyScoreNoteEdit(point)) {
+        if (applyScoreNoteEdit(point, event.shiftKey)) {
           if (state.scoreEditMode === "move-selection") {
             const originalSpan = scoreNotesSpan(state.scoreEditOriginalSelectionNotes || []);
             const currentSpan = scoreNotesSpan(
@@ -10591,6 +10713,7 @@
     state.scoreEditSelectionIndices = [];
     state.scoreEditOriginalSelectionNotes = null;
     state.scoreEditStartPoint = null;
+    state.scoreEditStartClient = null;
     state.scoreEditStartMidi = null;
     stopHoldLoop();
     commitUndoGesture();
