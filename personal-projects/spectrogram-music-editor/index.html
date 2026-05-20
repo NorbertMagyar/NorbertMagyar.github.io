@@ -315,6 +315,10 @@
                       </select>
                     </label>
                     <label class="control-stack">
+                      <span>Tempo: <output id="bassline-bpm-out">120</output> BPM</span>
+                      <input id="bassline-bpm-input" type="range" min="80" max="300" step="1" value="120" />
+                    </label>
+                    <label class="control-stack">
                       <span>Duration: <output id="duration-out">6.0 s</output></span>
                       <input id="duration-input" type="range" min="1" max="900" step="0.25" value="6" />
                     </label>
@@ -333,12 +337,8 @@
                 <details class="menu-dropdown">
                   <summary class="menu-trigger">Bass Line</summary>
                   <div class="menu-panel" role="group" aria-label="Bass line menu">
-                    <label class="control-stack">
-                      <span>Bass-line BPM: <output id="bassline-bpm-out">120</output></span>
-                      <input id="bassline-bpm-input" type="range" min="80" max="300" step="1" value="120" />
-                    </label>
                     <button id="clear-bassline-btn" type="button" class="action-btn menu-action-btn">Clear Bass Line</button>
-                    <p class="card-note">Bundled bass imports now live under Preset. This BPM remains available for future manual bass-line creation and for note-grid quantization in score-sheet mode.</p>
+                    <p class="card-note">Bundled bass imports now live under Preset. Tempo is now shared from the Synthesis menu and is applied automatically when importing MIDI or MusicXML scores that provide it.</p>
                   </div>
                 </details>
                 </div>

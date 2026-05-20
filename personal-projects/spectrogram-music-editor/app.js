@@ -251,9 +251,20 @@
       drawing: false,
       lastPointer: null,
       currentPointer: null,
+      currentPointerClient: null,
       lineStart: null,
       linePreview: null,
       pointerId: null,
+      edgePanActive: false,
+      edgePanIntent: null,
+      edgePanStartClientX: 0,
+      edgePanStartClientY: 0,
+      edgePanLastClientX: 0,
+      edgePanLastClientY: 0,
+      edgePanDragDistance: 0,
+      edgePanRafId: 0,
+      edgePanLastFrameAt: 0,
+      edgePanClickAnimationId: 0,
       selectedScoreIndices: [],
       rasterSelection: null,
       selectionRectStart: null,
@@ -2537,6 +2548,167 @@
     return state.tool === "line" || state.tool === "note" ? "cell" : "crosshair";
   }
 
+  function plotClientBounds() {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width / Math.max(1, canvas.width);
+    const scaleY = rect.height / Math.max(1, canvas.height);
+    return {
+      left: rect.left + margins.left * scaleX,
+      right: rect.left + (margins.left + plotWidth()) * scaleX,
+      top: rect.top + margins.top * scaleY,
+      bottom: rect.top + (margins.top + plotHeight()) * scaleY
+    };
+  }
+
+  function edgePanCursor(direction) {
+    if (direction < 0) {
+      return "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M6 12l7-6v4h5v4h-5v4z' fill='%23f5f8ff' stroke='%2308141f' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E\") 6 12, auto";
+    }
+    return "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M18 12l-7-6v4H6v4h5v4z' fill='%23f5f8ff' stroke='%2308141f' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E\") 18 12, auto";
+  }
+
+  function edgePanIntentFromClientPosition(clientX, clientY) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return null;
+    }
+    const bounds = plotClientBounds();
+    if (
+      clientX < bounds.left
+      || clientX > bounds.right
+      || clientY < bounds.top
+      || clientY > bounds.bottom
+    ) {
+      return null;
+    }
+    const width = Math.max(1, bounds.right - bounds.left);
+    const zoneX = Math.max(16, width * 0.05);
+    let xDir = 0;
+    let xStrength = 0;
+
+    if (clientX <= bounds.left + zoneX) {
+      xDir = -1;
+      xStrength = clamp((bounds.left + zoneX - clientX) / zoneX, 0, 1);
+    } else if (clientX >= bounds.right - zoneX) {
+      xDir = 1;
+      xStrength = clamp((clientX - (bounds.right - zoneX)) / zoneX, 0, 1);
+    }
+
+    if (!xDir) {
+      return null;
+    }
+
+    return { xDir, xStrength, cursor: edgePanCursor(xDir) };
+  }
+
+  function stopEdgePanLoop() {
+    if (state.edgePanRafId) {
+      cancelAnimationFrame(state.edgePanRafId);
+      state.edgePanRafId = 0;
+    }
+    state.edgePanLastFrameAt = 0;
+  }
+
+  function stopEdgePanClickAnimation() {
+    if (state.edgePanClickAnimationId) {
+      cancelAnimationFrame(state.edgePanClickAnimationId);
+      state.edgePanClickAnimationId = 0;
+    }
+  }
+
+  function shiftViewportBy(colDelta, axisDelta, options = {}) {
+    let changed = false;
+    const nextOffset = clamp(state.viewOffsetCol + colDelta, 0, maxViewOffset());
+    if (Math.abs(nextOffset - state.viewOffsetCol) > 1e-6) {
+      state.viewOffsetCol = nextOffset;
+      changed = true;
+    }
+    if (Math.abs(axisDelta) > 1e-9) {
+      const currentMin = effectiveMinFrequency();
+      const currentMax = Math.max(currentMin + 1, effectiveMaxFrequency());
+      const axisMode = frequencyAxisMode();
+      const axisMin = axisValueFromFrequency(currentMin, axisMode);
+      const axisMax = axisValueFromFrequency(currentMax, axisMode);
+      const nextMin = frequencyFromAxisValue(axisMin + axisDelta, axisMode);
+      const nextMax = frequencyFromAxisValue(axisMax + axisDelta, axisMode);
+      if (Math.abs(nextMin - currentMin) > 1e-6 || Math.abs(nextMax - currentMax) > 1e-6) {
+        setFrequencyRange(nextMin, nextMax);
+        changed = true;
+      }
+    }
+    if (changed) {
+      state.frequencyZoomReference = null;
+      scheduleSessionProjectSave();
+      updateOutputs();
+      if (options.render !== false) {
+        renderCanvas();
+      }
+    }
+    return changed;
+  }
+
+  function edgePanVelocity(intent, dtSeconds) {
+    const horizontalCols = intent.xDir
+      ? intent.xDir * visibleColCount() * (0.25 + Math.pow(intent.xStrength, 1.35) * 1.75) * dtSeconds
+      : 0;
+    return { horizontalCols, verticalAxis: 0 };
+  }
+
+  function animateEdgePanClickShift(intent) {
+    stopEdgePanClickAnimation();
+    const durationMs = 180;
+    const startAt = performance.now();
+    const totalCols = intent.xDir ? intent.xDir * visibleColCount() * 0.1 : 0;
+    let appliedCols = 0;
+
+    const tick = (now) => {
+      const t = clamp((now - startAt) / durationMs, 0, 1);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const nextCols = totalCols * eased;
+      shiftViewportBy(nextCols - appliedCols, 0);
+      appliedCols = nextCols;
+      if (t < 1) {
+        state.edgePanClickAnimationId = requestAnimationFrame(tick);
+      } else {
+        state.edgePanClickAnimationId = 0;
+      }
+    };
+
+    state.edgePanClickAnimationId = requestAnimationFrame(tick);
+  }
+
+  function edgePanLoop(frameAt) {
+    if (!state.edgePanActive || !state.edgePanIntent) {
+      state.edgePanRafId = 0;
+      state.edgePanLastFrameAt = 0;
+      return;
+    }
+    const last = state.edgePanLastFrameAt || frameAt;
+    const dtSeconds = clamp((frameAt - last) / 1000, 0, 0.05);
+    state.edgePanLastFrameAt = frameAt;
+    if (state.edgePanDragDistance > 4) {
+      const { horizontalCols, verticalAxis } = edgePanVelocity(state.edgePanIntent, dtSeconds);
+      shiftViewportBy(horizontalCols, verticalAxis);
+    }
+    state.edgePanRafId = requestAnimationFrame(edgePanLoop);
+  }
+
+  function beginEdgePanInteraction(event, intent) {
+    stopEdgePanClickAnimation();
+    stopEdgePanLoop();
+    state.edgePanActive = true;
+    state.edgePanIntent = intent;
+    state.edgePanStartClientX = event.clientX;
+    state.edgePanStartClientY = event.clientY;
+    state.edgePanLastClientX = event.clientX;
+    state.edgePanLastClientY = event.clientY;
+    state.edgePanDragDistance = 0;
+    state.pointerId = event.pointerId;
+    state.drawing = false;
+    state.currentPointerClient = { x: event.clientX, y: event.clientY };
+    canvas.setPointerCapture(event.pointerId);
+    updateCanvasCursor(state.currentPointer);
+  }
+
   function playheadColumn() {
     return state.playheadRatio * Math.max(1, trackColCount() - 1);
   }
@@ -3310,6 +3482,17 @@
   }
 
   function updateCanvasCursor(point) {
+    const edgeIntent = state.currentPointerClient
+      ? edgePanIntentFromClientPosition(state.currentPointerClient.x, state.currentPointerClient.y)
+      : null;
+    if (state.edgePanActive && state.edgePanIntent) {
+      canvas.style.cursor = state.edgePanIntent.cursor;
+      return;
+    }
+    if (edgeIntent) {
+      canvas.style.cursor = edgeIntent.cursor;
+      return;
+    }
     if (state.scoreEditMode === "move") {
       canvas.style.cursor = "grabbing";
       return;
@@ -9217,7 +9400,8 @@
     return {
       format: "MusicXML",
       notes: mergeAdjacentNoteEvents(notes),
-      totalDurationSec
+      totalDurationSec,
+      tempoBpm: bpm
     };
   }
 
@@ -9374,11 +9558,13 @@
       (max, note) => Math.max(max, note.startSec + note.durationSec),
       0
     );
+    const primaryTempoBpm = Math.round(60000000 / Math.max(1, tempoEvents[0].usPerQuarter));
 
     return {
       format: "MIDI",
       notes: mergeAdjacentNoteEvents(resolvedNotes),
-      totalDurationSec
+      totalDurationSec,
+      tempoBpm: primaryTempoBpm
     };
   }
 
@@ -9396,8 +9582,16 @@
     const maxMidi = parsedScore.notes.reduce((max, note) => Math.max(max, note.midi), -Infinity);
     const suggestedView = chooseScoreViewForMidiRange(minMidi, maxMidi);
     state.editorView = suggestedView;
+    state.noteBackend = preferredNoteBackendForEditorView(suggestedView);
+    state.renderMode = preferredRenderModeForNoteBackend(state.noteBackend, state.renderMode);
     if (editorViewSelect) {
       editorViewSelect.value = suggestedView;
+    }
+    if (noteBackendSelect) {
+      noteBackendSelect.value = state.noteBackend;
+    }
+    if (renderModeSelect) {
+      renderModeSelect.value = state.renderMode;
     }
     applyEditorViewSettings();
 
@@ -9406,6 +9600,13 @@
     const targetDuration = clamp(Math.ceil(importedDuration * 4) / 4, Number(durationInput.min), maxDuration);
     const wasScaled = importedDuration > maxDuration;
     const scale = wasScaled ? targetDuration / importedDuration : 1;
+    if (Number.isFinite(parsedScore.tempoBpm) && parsedScore.tempoBpm > 0) {
+      basslineBpmInput.value = String(clamp(
+        Math.round(parsedScore.tempoBpm),
+        Number(basslineBpmInput.min),
+        Number(basslineBpmInput.max)
+      ));
+    }
     const firstStartSec = firstNoteStartSec(parsedScore.notes) || 0;
     const scaledNotes = parsedScore.notes.map((note) => ({
       ...note,
@@ -9420,7 +9621,7 @@
     resetUndoHistory();
     markDirty();
     stopPlayback(
-      `Imported ${parsedScore.notes.length} notes from ${parsedScore.format} into ${scoreViewLabel(suggestedView)}${wasScaled ? ` (time-scaled to ${targetDuration} s)` : ""}.`
+      `Imported ${parsedScore.notes.length} notes from ${parsedScore.format} into ${scoreViewLabel(suggestedView)} with ${noteBackendName(state.noteBackend)} at ${Math.round(basslineBpm())} BPM${wasScaled ? ` (time-scaled to ${targetDuration} s)` : ""}.`
     );
     renderCanvas();
   }
@@ -9894,8 +10095,15 @@
   }
 
   function handlePointerDown(event) {
+    stopEdgePanClickAnimation();
     const point = canvasToGrid(event.clientX, event.clientY);
+    state.currentPointerClient = { x: event.clientX, y: event.clientY };
     if (!point) {
+      return;
+    }
+    const edgeIntent = edgePanIntentFromClientPosition(event.clientX, event.clientY);
+    if (edgeIntent) {
+      beginEdgePanInteraction(event, edgeIntent);
       return;
     }
     if (state.tool === "pointer") {
@@ -10097,10 +10305,26 @@
   function handlePointerMove(event) {
     const point = canvasToGrid(event.clientX, event.clientY);
     const scorePoint = point && state.tool === "note" ? snapPointToScoreMidi(point) : point;
+    state.currentPointerClient = { x: event.clientX, y: event.clientY };
     state.pointerInside = Boolean(scorePoint || point);
     state.currentPointer = scorePoint || point;
     updateCursorReadout(scorePoint || point);
     updateCanvasCursor(scorePoint || point);
+
+    if (state.edgePanActive && state.pointerId === event.pointerId) {
+      state.edgePanLastClientX = event.clientX;
+      state.edgePanLastClientY = event.clientY;
+      state.edgePanIntent = edgePanIntentFromClientPosition(event.clientX, event.clientY) || state.edgePanIntent;
+      state.edgePanDragDistance = Math.hypot(
+        event.clientX - state.edgePanStartClientX,
+        event.clientY - state.edgePanStartClientY
+      );
+      if (state.edgePanDragDistance > 4 && !state.edgePanRafId) {
+        state.edgePanRafId = requestAnimationFrame(edgePanLoop);
+      }
+      updateCanvasCursor(scorePoint || point);
+      return;
+    }
 
     if (!point) {
       renderCanvas();
@@ -10224,6 +10448,26 @@
 
   function handlePointerUp(event) {
     if (state.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (state.edgePanActive) {
+      const clickIntent = state.edgePanIntent;
+      const wasClick = state.edgePanDragDistance <= 4;
+      state.edgePanActive = false;
+      state.edgePanIntent = null;
+      state.edgePanStartClientX = 0;
+      state.edgePanStartClientY = 0;
+      state.edgePanLastClientX = 0;
+      state.edgePanLastClientY = 0;
+      state.edgePanDragDistance = 0;
+      stopEdgePanLoop();
+      state.pointerId = null;
+      if (wasClick && clickIntent) {
+        animateEdgePanClickShift(clickIntent);
+      }
+      updateCanvasCursor(state.currentPointer);
+      renderCanvas();
       return;
     }
 
@@ -10356,6 +10600,7 @@
 
   function handlePointerLeave() {
     state.pointerInside = false;
+    state.currentPointerClient = null;
     updateCursorReadout(null);
     updateCanvasCursor(null);
     renderCanvas();
