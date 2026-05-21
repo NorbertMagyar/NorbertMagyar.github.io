@@ -912,6 +912,10 @@
     return isScoreSheetMode();
   }
 
+  function isSelectToolAvailable() {
+    return true;
+  }
+
   function nearestScoreMidiForPoint(point) {
     const profile = currentScoreProfile();
     if (!profile || !point) {
@@ -4150,14 +4154,17 @@
       loopButton.setAttribute("aria-pressed", state.loopPlayback ? "true" : "false");
       loopButton.title = state.loopPlayback ? "Loop playback on" : "Loop playback off";
     }
-    for (const scoreTool of ["select", "note"]) {
-      const button = toolButtons.find((toolButton) => toolButton.dataset.tool === scoreTool);
-      if (button) {
-        button.hidden = !isScoreNoteToolAvailable();
-        button.disabled = !isScoreNoteToolAvailable();
-      }
+    const selectButton = toolButtons.find((toolButton) => toolButton.dataset.tool === "select");
+    if (selectButton) {
+      selectButton.hidden = !isSelectToolAvailable();
+      selectButton.disabled = !isSelectToolAvailable();
     }
-    if (!isScoreNoteToolAvailable() && (state.tool === "note" || state.tool === "select")) {
+    const noteButton = toolButtons.find((toolButton) => toolButton.dataset.tool === "note");
+    if (noteButton) {
+      noteButton.hidden = !isScoreNoteToolAvailable();
+      noteButton.disabled = !isScoreNoteToolAvailable();
+    }
+    if (!isScoreNoteToolAvailable() && state.tool === "note") {
       state.tool = "pointer";
     }
     updateToolParameterVisibility();
@@ -5910,7 +5917,11 @@
       return;
     }
     if (state.liveSampleUsesProgressive) {
-      scheduleLiveSampleNotes();
+      if (state.liveSampleInstrument) {
+        scheduleLiveSampleNotes();
+      } else {
+        scheduleLiveSampleWindows();
+      }
     }
     if (state.loopPlayback && duration > 0) {
       const wrappedElapsed = ((elapsed % duration) + duration) % duration;
@@ -9030,7 +9041,11 @@
       if (!state.liveSampleUsesProgressive || !state.isPlaying) {
         return;
       }
-      scheduleLiveSampleNotes();
+      if (state.liveSampleInstrument) {
+        scheduleLiveSampleNotes();
+      } else {
+        scheduleLiveSampleWindows();
+      }
     }, 200);
   }
 
@@ -9100,54 +9115,15 @@
     const startOffset = preferredPlaybackStartOffset(durationSeconds());
     const compositeScoreEvents = currentRenderLayerState().scoreEvents;
     const progressiveScoreEvents = compositeScoreEvents.length
-      ? compositeScoreEvents
+      ? cloneEventList(compositeScoreEvents)
       : cloneEventList(state.scoreEvents);
     const baseBuffer = await renderPreviewBaseIfNeeded("playback layers");
     if (requestId !== state.transportRequestId || state.transportPending !== "play") {
       return false;
     }
-    const smplr = await ensureSmplrModuleLoaded();
-    if (requestId !== state.transportRequestId || state.transportPending !== "play") {
-      return false;
-    }
-    const loader = ensureSmplrSharedLoader(smplr);
     const liveSampleGainNode = audioContext.createGain();
     liveSampleGainNode.gain.value = 1;
     liveSampleGainNode.connect(state.gainNode);
-    resetSampleDebug(`loading ${noteBackendName(state.noteBackend).toLowerCase()} module for active ${state.scoreEvents.length} / composite ${compositeScoreEvents.length} notes...`);
-    const instrument = createSmplrInstrumentInstance(smplr, audioContext, state.noteBackend, {
-      loader,
-      scheduleLookaheadMs: Math.ceil((LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS + 0.5) * 1000),
-      scheduleIntervalMs: 120,
-      onLoadProgress: ({ loaded, total }) => {
-        setSampleDebug(`loading samples ${loaded}/${total || "?"}.`);
-      },
-      onStart: (event) => {
-        state.sampleDebugStartedCount += 1;
-        const noteLabel = event && (event.note ?? event.midi ?? event.pitch ?? "?");
-        setSampleDebug(`scheduled ${state.sampleDebugScheduledCount}, started ${state.sampleDebugStartedCount}. last start ${noteLabel}.`);
-      },
-      destination: liveSampleGainNode
-    });
-    setRenderOverlay(true, {
-      title: "Preparing playback",
-      detail: `Loading ${noteBackendName(state.noteBackend).toLowerCase()}`,
-      progress: null
-    });
-    try {
-      await instrument.load;
-      setSampleDebug(`instrument loaded for active ${state.scoreEvents.length} / composite ${state.liveSampleScoreEvents.length} notes. scheduled ${state.sampleDebugScheduledCount}, started ${state.sampleDebugStartedCount}.`);
-    } finally {
-      setRenderOverlay(false);
-    }
-    if (requestId !== state.transportRequestId || state.transportPending !== "play") {
-      try {
-        instrument.stop();
-      } catch (error) {
-        // Ignore cancellation races while the instrument is still loading.
-      }
-      return false;
-    }
 
     stopActiveSource();
     stopLiveSamplePlayback();
@@ -9157,13 +9133,48 @@
     }
 
     state.gainNode.gain.value = 1;
-    state.liveSampleInstrument = instrument;
+    state.liveSampleInstrument = null;
     state.liveSampleScheduler = null;
     state.liveSampleGainNode = liveSampleGainNode;
     state.liveSampleStopFns = [];
     state.liveSampleScoreEvents = progressiveScoreEvents;
     state.liveSampleUsesProgressive = true;
     state.liveSampleScheduledUntilSec = startOffset;
+    state.liveSampleRenderedWindows.clear();
+    state.liveSampleRenderingWindows.clear();
+    state.sampleDebugScheduledCount = 0;
+    state.sampleDebugStartedCount = 0;
+    state.isPlaying = true;
+    state.isPaused = false;
+    const playbackStartAt = audioContext.currentTime + 0.03;
+    state.playStartedAt = playbackStartAt - startOffset;
+    state.playDurationSeconds = durationSeconds();
+    state.playheadRatio = state.playDurationSeconds > 0 ? startOffset / state.playDurationSeconds : 0;
+    state.lastPlaybackLoopIndex = Math.floor(startOffset / Math.max(0.001, state.playDurationSeconds));
+    const initialWindowIndex = clamp(
+      Math.floor(startOffset / LIVE_SAMPLE_PLAY_WINDOW_SECONDS),
+      0,
+      Math.max(0, liveSampleWindowCount() - 1)
+    );
+    if (progressiveScoreEvents.length) {
+      setRenderOverlay(true, {
+        title: "Preparing playback",
+        detail: `Buffering ${noteBackendName(state.noteBackend).toLowerCase()} window ${initialWindowIndex + 1}/${liveSampleWindowCount()}`,
+        progress: null
+      });
+      try {
+        await ensureLiveSampleWindow(initialWindowIndex, {
+          initialPlaybackOffsetSec: startOffset,
+          initialSourceStartAt: playbackStartAt
+        });
+      } finally {
+        setRenderOverlay(false);
+      }
+      if (requestId !== state.transportRequestId || state.transportPending !== "play") {
+        stopLiveSamplePlayback();
+        return false;
+      }
+    }
     if (baseBuffer) {
       const baseSource = audioContext.createBufferSource();
       baseSource.buffer = baseBuffer;
@@ -9179,22 +9190,16 @@
         }
       };
       state.sourceNode = baseSource;
-      baseSource.start(0, clamp(startOffset, 0, baseBuffer.duration));
+      baseSource.start(playbackStartAt, clamp(startOffset, 0, baseBuffer.duration));
     } else {
       state.sourceNode = null;
     }
-    state.isPlaying = true;
-    state.isPaused = false;
-    state.playStartedAt = audioContext.currentTime - startOffset;
-    state.playDurationSeconds = durationSeconds();
-    state.playheadRatio = state.playDurationSeconds > 0 ? startOffset / state.playDurationSeconds : 0;
-    state.lastPlaybackLoopIndex = Math.floor(startOffset / Math.max(0.001, state.playDurationSeconds));
     followPlaybackViewport({ allowBackward: true });
-    scheduleLiveSampleNotes(true);
+    scheduleLiveSampleWindows();
     startLiveSampleSchedulerTimer();
     state.transportPending = "";
-    setSampleDebug(`playback started at ${startOffset.toFixed(2)}s for active ${state.scoreEvents.length} / composite ${state.liveSampleScoreEvents.length} notes. scheduled ${state.sampleDebugScheduledCount}, started ${state.sampleDebugStartedCount}.`);
-    setStatus(`Playing ${noteBackendName(state.noteBackend).toLowerCase()} with progressive note scheduling.`);
+    setSampleDebug(`playback started at ${startOffset.toFixed(2)}s for active ${state.scoreEvents.length} / composite ${state.liveSampleScoreEvents.length} notes. buffered window ${initialWindowIndex + 1}/${liveSampleWindowCount()}.`);
+    setStatus(`Playing ${noteBackendName(state.noteBackend).toLowerCase()} with progressive window buffering.`);
     updateOutputs();
     renderCanvas();
     state.rafId = requestAnimationFrame(animatePlayhead);
@@ -9214,7 +9219,14 @@
     if (requestId !== state.transportRequestId || state.transportPending !== "play") {
       return;
     }
-    if (sampleNoteBackendSupportsProgressivePlay()) {
+    const progressiveSampleNotesAvailable = Boolean(
+      SMPLR_NOTE_BACKENDS[state.noteBackend]
+      && (
+        (currentRenderLayerState().scoreEvents && currentRenderLayerState().scoreEvents.length)
+        || state.scoreEvents.length
+      )
+    );
+    if (progressiveSampleNotesAvailable) {
       try {
         const started = await playAudioWithProgressiveSampleNotes(audioContext, requestId);
         if (requestId === state.transportRequestId) {
@@ -9317,7 +9329,7 @@
   }
 
   function setTool(tool) {
-    if ((tool === "note" || tool === "select") && !isScoreNoteToolAvailable()) {
+    if (tool === "note" && !isScoreNoteToolAvailable()) {
       tool = "pointer";
     }
     if (!["note", "select"].includes(tool) && state.scoreRepeatMode) {
