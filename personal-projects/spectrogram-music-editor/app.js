@@ -78,6 +78,13 @@
         kit: "MusyngKite",
         loadLoopData: false
       },
+      "pipe-organ-samples": {
+        label: "Pipe organ samples",
+        kind: "soundfont",
+        instrument: "church_organ",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
       "steel-guitar-samples": {
         label: "Steel guitar samples",
         kind: "soundfont",
