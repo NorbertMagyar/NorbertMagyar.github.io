@@ -276,6 +276,9 @@
       rasterSelection: null,
       selectionRectStart: null,
       selectionRectCurrent: null,
+      zoomRectStart: null,
+      zoomRectCurrent: null,
+      viewportHistory: [],
       selectionAdditive: false,
       selectionClickHit: null,
       scoreRepeatMode: false,
@@ -812,7 +815,7 @@
   }
 
   function updateToolParameterVisibility() {
-    const showSize = !["note", "pointer", "select"].includes(state.tool);
+    const showSize = !["note", "pointer", "select", "zoom"].includes(state.tool);
     const showStrength = ["brush", "spray", "gaussian", "erase"].includes(state.tool);
     const showDensity = state.tool === "spray";
     const showAny = showSize || showStrength || showDensity;
@@ -1076,6 +1079,68 @@
       && point.row >= bounds.startRow
       && point.row <= bounds.endRow
     );
+  }
+
+  function zoomToolViewportSnapshot() {
+    return {
+      viewOffsetCol: state.viewOffsetCol,
+      viewColSpan: state.viewColSpan,
+      minFreq: effectiveMinFrequency(),
+      maxFreq: effectiveMaxFrequency()
+    };
+  }
+
+  function pushZoomToolViewportHistorySnapshot() {
+    const snapshot = zoomToolViewportSnapshot();
+    const last = state.viewportHistory[state.viewportHistory.length - 1];
+    if (
+      last
+      && Math.abs(last.viewOffsetCol - snapshot.viewOffsetCol) < 1e-6
+      && Math.abs(last.viewColSpan - snapshot.viewColSpan) < 1e-6
+      && Math.abs(last.minFreq - snapshot.minFreq) < 1e-6
+      && Math.abs(last.maxFreq - snapshot.maxFreq) < 1e-6
+    ) {
+      return;
+    }
+    state.viewportHistory.push(snapshot);
+    if (state.viewportHistory.length > 24) {
+      state.viewportHistory.splice(0, state.viewportHistory.length - 24);
+    }
+  }
+
+  function restoreZoomToolPreviousViewport() {
+    const snapshot = state.viewportHistory.pop();
+    if (!snapshot) {
+      setStatus("No previous zoom viewport stored.");
+      renderCanvas();
+      return false;
+    }
+    setViewWindow(snapshot.viewOffsetCol, snapshot.viewColSpan);
+    setFrequencyRange(snapshot.minFreq, snapshot.maxFreq);
+    setStatus("Restored previous zoom viewport.");
+    renderCanvas();
+    return true;
+  }
+
+  function zoomToolViewportToRect(bounds) {
+    if (!bounds) {
+      return false;
+    }
+    const widthCols = rectWidth(bounds);
+    const heightRows = rectHeight(bounds);
+    if (widthCols < 2 || heightRows < 2) {
+      return false;
+    }
+    pushZoomToolViewportHistorySnapshot();
+    const targetOffset = clamp(bounds.startCol, 0, maxViewOffset());
+    const targetSpan = clamp(widthCols, MIN_VIEW_COLS, trackColCount());
+    setViewWindow(targetOffset, targetSpan);
+    const topFreq = freqFromRow(bounds.startRow);
+    const bottomFreq = freqFromRow(bounds.endRow);
+    setFrequencyRange(Math.min(topFreq, bottomFreq), Math.max(topFreq, bottomFreq));
+    setStatus("Viewport zoomed to selection.");
+    renderCanvas();
+    return true;
   }
 
   function sampleRangeToColumnRange(totalSamples, startSample, endSample, paddingCols = 3) {
@@ -2550,9 +2615,91 @@
     renderCanvas();
   }
 
+  function viewportSnapshot() {
+    return {
+      viewOffsetCol: state.viewOffsetCol,
+      viewColSpan: state.viewColSpan,
+      minFreq: effectiveMinFrequency(),
+      maxFreq: effectiveMaxFrequency()
+    };
+  }
+
+  function pushViewportHistorySnapshot() {
+    const snapshot = viewportSnapshot();
+    const last = state.viewportHistory?.[state.viewportHistory.length - 1];
+    if (
+      last
+      && Math.abs(last.viewOffsetCol - snapshot.viewOffsetCol) < 1e-6
+      && Math.abs(last.viewColSpan - snapshot.viewColSpan) < 1e-6
+      && Math.abs(last.minFreq - snapshot.minFreq) < 1e-6
+      && Math.abs(last.maxFreq - snapshot.maxFreq) < 1e-6
+    ) {
+      return;
+    }
+    if (!Array.isArray(state.viewportHistory)) {
+      state.viewportHistory = [];
+    }
+    state.viewportHistory.push(snapshot);
+    if (state.viewportHistory.length > 32) {
+      state.viewportHistory.splice(0, state.viewportHistory.length - 32);
+    }
+  }
+
+  function restorePreviousViewportFromHistory() {
+    const snapshot = Array.isArray(state.viewportHistory) ? state.viewportHistory.pop() : null;
+    if (!snapshot) {
+      setStatus("No previous zoom viewport stored.");
+      renderCanvas();
+      return false;
+    }
+    setViewWindow(snapshot.viewOffsetCol, snapshot.viewColSpan, { render: false });
+    setFrequencyRange(snapshot.minFreq, snapshot.maxFreq);
+    state.frequencyZoomReference = null;
+    scheduleSessionProjectSave();
+    updateOutputs();
+    setStatus("Restored previous zoom viewport.");
+    renderCanvas();
+    return true;
+  }
+
+  function zoomViewportToRect(bounds) {
+    if (!bounds) {
+      return false;
+    }
+    const widthCols = Math.abs(bounds.endCol - bounds.startCol);
+    const heightRows = Math.abs(bounds.endRow - bounds.startRow);
+    if (widthCols < 1 && heightRows < 1) {
+      return false;
+    }
+    pushViewportHistorySnapshot();
+    const nextStartCol = clamp(Math.min(bounds.startCol, bounds.endCol), 0, trackColCount() - 1);
+    const nextEndCol = clamp(Math.max(bounds.startCol, bounds.endCol), 0, trackColCount() - 1);
+    const nextSpan = clamp(
+      Math.max(MIN_VIEW_COLS, Math.round(nextEndCol - nextStartCol + 1)),
+      Math.min(MIN_VIEW_COLS, trackColCount()),
+      trackColCount()
+    );
+    setViewWindow(nextStartCol, nextSpan, { render: false });
+
+    const topRow = clamp(Math.min(bounds.startRow, bounds.endRow), 0, GRID_ROWS - 1);
+    const bottomRow = clamp(Math.max(bounds.startRow, bounds.endRow), 0, GRID_ROWS - 1);
+    const nextMaxFreq = freqFromRow(topRow);
+    const nextMinFreq = freqFromRow(bottomRow);
+    setFrequencyRange(nextMinFreq, nextMaxFreq);
+    state.frequencyZoomReference = null;
+    scheduleSessionProjectSave();
+    updateOutputs();
+    setStatus("Viewport zoomed to selection.");
+    renderCanvas();
+    return true;
+  }
+
   function defaultCanvasCursor() {
     if (state.tool === "pointer") {
       return "ew-resize";
+    }
+    if (state.tool === "zoom") {
+      return "zoom-in";
     }
     if (state.tool === "select") {
       return "crosshair";
@@ -3550,6 +3697,10 @@
     }
     if (state.scoreEditMode === "resize-left" || state.scoreEditMode === "resize-right") {
       canvas.style.cursor = "ew-resize";
+      return;
+    }
+    if (state.tool === "zoom") {
+      canvas.style.cursor = "zoom-in";
       return;
     }
     if (isNearPlayhead(point)) {
@@ -5120,6 +5271,26 @@
     ctx.restore();
   }
 
+  function drawZoomToolSelectionMarquee() {
+    if (!state.zoomRectStart || !state.zoomRectCurrent) {
+      return;
+    }
+    const from = gridToCanvas(state.zoomRectStart.col, state.zoomRectStart.row);
+    const to = gridToCanvas(state.zoomRectCurrent.col, state.zoomRectCurrent.row);
+    const x = Math.min(from.x, to.x);
+    const y = Math.min(from.y, to.y);
+    const width = Math.abs(to.x - from.x);
+    const height = Math.abs(to.y - from.y);
+    ctx.save();
+    ctx.setLineDash([8, 6]);
+    ctx.fillStyle = "rgba(196, 230, 255, 0.1)";
+    ctx.strokeStyle = "rgba(196, 230, 255, 0.96)";
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, width - 1), Math.max(1, height - 1));
+    ctx.restore();
+  }
+
   function drawBassEventOverlay() {
     const bassNoteEvents = currentRenderLayerState().bassEvents.filter((event) => event.type === "bass");
     if (!bassNoteEvents.length) {
@@ -5276,6 +5447,30 @@
     ctx.restore();
   }
 
+  function drawZoomSelectionMarquee() {
+    if (!state.zoomRectStart || !state.zoomRectCurrent) {
+      return;
+    }
+    const bounds = normalizeGridRect(state.zoomRectStart, state.zoomRectCurrent);
+    if (!bounds) {
+      return;
+    }
+    const topLeft = gridToCanvas(bounds.startCol, bounds.startRow);
+    const bottomRight = gridToCanvas(bounds.endCol, bounds.endRow);
+    const left = Math.min(topLeft.x, bottomRight.x);
+    const top = Math.min(topLeft.y, bottomRight.y);
+    const width = Math.max(1, Math.abs(bottomRight.x - topLeft.x));
+    const height = Math.max(1, Math.abs(bottomRight.y - topLeft.y));
+    ctx.save();
+    ctx.strokeStyle = "rgba(158, 211, 255, 0.95)";
+    ctx.fillStyle = "rgba(102, 194, 255, 0.12)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([7, 5]);
+    ctx.fillRect(left, top, width, height);
+    ctx.strokeRect(left, top, width, height);
+    ctx.restore();
+  }
+
   function renderCanvas() {
     ensureRasterCapacity();
     const diagnostics = getDiagnosticsSnapshot();
@@ -5314,6 +5509,7 @@
     drawScoreMoveGuide();
     drawScoreTimingHint();
     drawScoreSelectionMarquee();
+    drawZoomToolSelectionMarquee();
     drawPointerPreview();
   }
 
@@ -10254,6 +10450,20 @@
       renderCanvas();
       return;
     }
+    if (state.tool === "zoom") {
+      state.pointerId = event.pointerId;
+      state.drawing = true;
+      state.lastPointer = point;
+      state.currentPointer = point;
+      state.pointerInside = true;
+      state.zoomRectStart = point;
+      state.zoomRectCurrent = point;
+      updateCursorReadout(point);
+      canvas.setPointerCapture(event.pointerId);
+      updateCanvasCursor(point);
+      renderCanvas();
+      return;
+    }
     const scorePoint = state.tool === "note" ? snapPointToScoreMidi(point) : point;
     if (state.tool === "note" && !scorePoint) {
       return;
@@ -10450,6 +10660,9 @@
     state.currentPointer = scorePoint || point;
     updateCursorReadout(scorePoint || point);
     updateCanvasCursor(scorePoint || point);
+    if (state.tool === "zoom" && !state.edgePanActive) {
+      canvas.style.cursor = "zoom-in";
+    }
 
     if (state.edgePanActive && state.pointerId === event.pointerId) {
       state.edgePanLastClientX = event.clientX;
@@ -10475,6 +10688,9 @@
       setPlayheadFromColumn(point.col);
       setStatus(timelinePositionStatus());
     } else if (state.drawing && state.pointerId === event.pointerId) {
+      if (state.zoomRectStart) {
+        state.zoomRectCurrent = point;
+      } else
       if (state.scoreCtrlPendingHit) {
         const pending = state.scoreCtrlPendingHit;
         const dx = Math.abs(point.col - pending.point.col);
@@ -10620,7 +10836,13 @@
       return;
     }
 
-    if (state.scoreCtrlPendingHit) {
+    if (state.zoomRectStart && state.zoomRectCurrent) {
+      const zoomBounds = normalizeGridRect(
+        state.zoomRectStart,
+        state.zoomRectCurrent
+      );
+      zoomToolViewportToRect(zoomBounds);
+    } else if (state.scoreCtrlPendingHit) {
       toggleSelectedScoreIndex(state.scoreCtrlPendingHit.index);
       const selectionCount = normalizeSelectedScoreIndices().length;
       setStatus(selectionCount
@@ -10716,6 +10938,8 @@
     state.linePreview = null;
     state.selectionRectStart = null;
     state.selectionRectCurrent = null;
+    state.zoomRectStart = null;
+    state.zoomRectCurrent = null;
     state.selectionAdditive = false;
     state.selectionClickHit = null;
     state.scoreCtrlPendingHit = null;
@@ -11369,6 +11593,19 @@
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
         undoLastGesture();
+        return;
+      }
+
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && event.shiftKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        restoreZoomToolPreviousViewport();
+        return;
+      }
+
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        setTool("zoom");
+        renderCanvas();
         return;
       }
 
