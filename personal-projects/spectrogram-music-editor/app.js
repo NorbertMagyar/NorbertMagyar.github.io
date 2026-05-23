@@ -125,6 +125,7 @@
     const sampleDebugText = document.getElementById("sample-debug-text");
     const playButton = document.getElementById("play-btn");
     const stopButton = document.getElementById("stop-btn");
+    const playSelectionButton = document.getElementById("play-selection-btn");
     const loopButton = document.getElementById("loop-btn");
     const renderButton = document.getElementById("render-btn");
     const exportButton = document.getElementById("export-btn");
@@ -138,6 +139,7 @@
     const newLayerButton = document.getElementById("new-layer-btn");
     const pasteLayerButton = document.getElementById("paste-layer-btn");
     const undoButton = document.getElementById("undo-btn");
+    const cropButton = document.getElementById("crop-btn");
     const clearButton = document.getElementById("clear-btn");
     const presetButton = document.getElementById("preset-btn");
     const presetSelect = document.getElementById("preset-select");
@@ -343,11 +345,14 @@
       audioContext: null,
       gainNode: null,
       sourceNode: null,
+      auditionSourceNode: null,
+      auditionRequestId: 0,
       playStartedAt: 0,
       playDurationSeconds: durationSeconds(),
       previewBaseBuffer: null,
       previewBaseCache: null,
       previewBaseDirtyToken: 0,
+      cropMode: false,
       liveSampleInstrument: null,
       liveSampleScheduler: null,
       liveSampleIntervalId: 0,
@@ -2412,8 +2417,12 @@
     }
   }
 
+  function trackColCountForDuration(seconds) {
+    return Math.max(VIEW_COLS, Math.round(Math.max(0, seconds) * COLS_PER_SECOND));
+  }
+
   function trackColCount() {
-    return Math.max(VIEW_COLS, Math.round(durationSeconds() * COLS_PER_SECOND));
+    return trackColCountForDuration(durationSeconds());
   }
 
   function resizeLayerRasterData(data, requiredCols) {
@@ -2628,6 +2637,161 @@
     scheduleSessionProjectSave();
     updateOutputs();
     renderCanvas();
+  }
+
+  function cropModeStatusText() {
+    return "Crop mode: adjust the timeline overview to the range to keep, press Ctrl+C again to crop to the current viewport, or Esc to cancel.";
+  }
+
+  function enterCropMode() {
+    state.cropMode = true;
+    updateOutputs();
+    setStatus(cropModeStatusText());
+    renderCanvas();
+  }
+
+  function exitCropMode(statusMessage = "Crop mode cancelled.") {
+    state.cropMode = false;
+    updateOutputs();
+    if (statusMessage) {
+      setStatus(statusMessage);
+    }
+    renderCanvas();
+  }
+
+  function cropSelectionHasCopyTarget() {
+    if (selectedScoreNotes().length) {
+      return true;
+    }
+    if (state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection)) {
+      return true;
+    }
+    return ["note", "select"].includes(state.tool) && Boolean(currentEditableScoreHit());
+  }
+
+  function cropRasterDataToTimeRange(data, sourceDurationSec, cropStartSec, cropDurationSec) {
+    const sourceCols = Math.max(1, Math.floor((data?.length || 0) / GRID_ROWS));
+    const targetCols = trackColCountForDuration(cropDurationSec);
+    const next = new Float32Array(targetCols * GRID_ROWS);
+    if (!data || !data.length) {
+      return next;
+    }
+    const safeSourceDuration = Math.max(0.001, sourceDurationSec);
+    const safeCropDuration = Math.max(0.001, cropDurationSec);
+    for (let row = 0; row < GRID_ROWS; row += 1) {
+      const sourceOffset = row * sourceCols;
+      const targetOffset = row * targetCols;
+      for (let col = 0; col < targetCols; col += 1) {
+        const t = targetCols > 1 ? col / Math.max(1, targetCols - 1) : 0;
+        const absoluteTime = clamp(cropStartSec + t * safeCropDuration, 0, safeSourceDuration);
+        const sourceRatio = absoluteTime / safeSourceDuration;
+        const sourceCol = clamp(sourceRatio * Math.max(0, sourceCols - 1), 0, Math.max(0, sourceCols - 1));
+        const col0 = Math.floor(sourceCol);
+        const col1 = Math.min(sourceCols - 1, col0 + 1);
+        const mix = sourceCol - col0;
+        const v0 = data[sourceOffset + col0] || 0;
+        const v1 = data[sourceOffset + col1] || 0;
+        next[targetOffset + col] = lerp(v0, v1, mix);
+      }
+    }
+    return next;
+  }
+
+  function cropScoreEventsToTimeRange(events, cropStartSec, cropEndSec) {
+    return (events || [])
+      .map((note) => {
+        const startSec = Math.max(cropStartSec, note.startSec);
+        const endSec = Math.min(cropEndSec, note.startSec + Math.max(0.02, note.durationSec));
+        const durationSec = endSec - startSec;
+        if (durationSec <= 0.0005) {
+          return null;
+        }
+        return {
+          ...note,
+          startSec: startSec - cropStartSec,
+          durationSec: Math.max(0.02, durationSec)
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function cropBassEventsToTimeRange(events, cropStartSec, cropEndSec) {
+    return (events || [])
+      .map((event) => {
+        const startSec = Number(event.time) || 0;
+        const endSec = bassEventEndTime(event);
+        if (endSec <= cropStartSec || startSec >= cropEndSec) {
+          return null;
+        }
+        const nextEvent = {
+          ...event,
+          time: Math.max(0, startSec - cropStartSec)
+        };
+        if (event.type === "bass") {
+          const clippedStartSec = Math.max(cropStartSec, startSec);
+          const clippedEndSec = Math.min(cropEndSec, endSec);
+          nextEvent.time = clippedStartSec - cropStartSec;
+          nextEvent.duration = Math.max(0.02, clippedEndSec - clippedStartSec);
+        }
+        return nextEvent;
+      })
+      .filter(Boolean);
+  }
+
+  function commitCropMode() {
+    const tab = currentTabRecord();
+    if (!tab) {
+      exitCropMode("Crop mode cancelled.");
+      return false;
+    }
+    const sourceDurationSec = durationSeconds();
+    const cropRange = visibleTimeRange();
+    const cropStartSec = clamp(cropRange.start, 0, sourceDurationSec);
+    const cropEndSec = clamp(cropRange.end, cropStartSec, sourceDurationSec);
+    const nextDurationSec = clamp(
+      cropEndSec - cropStartSec,
+      Number(durationInput.min),
+      Number(durationInput.max)
+    );
+    if (cropStartSec <= 1e-6 && Math.abs(nextDurationSec - sourceDurationSec) <= 1e-6) {
+      exitCropMode("Crop skipped because the viewport already spans the whole track.");
+      return false;
+    }
+
+    stopPlayback("Applying crop to the current viewport.");
+    saveCurrentTabState();
+    for (const layer of tab.layers) {
+      layer.drawData = cropRasterDataToTimeRange(layer.drawData, sourceDurationSec, cropStartSec, nextDurationSec);
+      layer.basslineData = cropRasterDataToTimeRange(layer.basslineData, sourceDurationSec, cropStartSec, nextDurationSec);
+      layer.scoreEvents = cropScoreEventsToTimeRange(layer.scoreEvents, cropStartSec, cropEndSec);
+      layer.bassEvents = cropBassEventsToTimeRange(layer.bassEvents, cropStartSec, cropEndSec);
+    }
+
+    durationInput.value = String(nextDurationSec);
+    rasterColCount = trackColCountForDuration(nextDurationSec);
+    const activeLayer = tab.layers.find((layer) => layer.id === state.activeLayerId) || tab.layers[0] || null;
+    if (activeLayer) {
+      drawData = activeLayer.drawData;
+      basslineData = activeLayer.basslineData;
+      state.bassEvents = activeLayer.bassEvents;
+      state.scoreEvents = activeLayer.scoreEvents;
+      state.activeLayerId = activeLayer.id;
+      tab.activeLayerId = activeLayer.id;
+    }
+
+    clearEditorSelection();
+    state.playheadRatio = 0;
+    state.pausedOffsetSeconds = 0;
+    state.viewOffsetCol = 0;
+    state.viewColSpan = trackColCountForDuration(nextDurationSec);
+    state.cropMode = false;
+    resetUndoHistory();
+    markDirty();
+    saveCurrentTabState();
+    updateOutputs();
+    renderCanvas();
+    setStatus(`Crop applied. Kept ${cropStartSec.toFixed(2)} s - ${cropEndSec.toFixed(2)} s as the new track.`);
+    return true;
   }
 
   function viewportSnapshot() {
@@ -3008,6 +3172,7 @@
   function clearScoreSelection() {
     state.selectedScoreIndices = [];
     resetScoreRepeatMode();
+    updateOutputs();
   }
 
   function clearRasterSelection() {
@@ -3021,7 +3186,9 @@
 
   function setSelectedScoreIndices(indices) {
     state.selectedScoreIndices = Array.isArray(indices) ? indices.slice() : [];
-    return normalizeSelectedScoreIndices();
+    const normalized = normalizeSelectedScoreIndices();
+    updateOutputs();
+    return normalized;
   }
 
   function toggleSelectedScoreIndex(index) {
@@ -3032,6 +3199,7 @@
       selected.add(index);
     }
     state.selectedScoreIndices = Array.from(selected).sort((a, b) => a - b);
+    updateOutputs();
     return state.selectedScoreIndices;
   }
 
@@ -4436,6 +4604,16 @@
     if (stopButton) {
       stopButton.classList.toggle("is-engaged", !state.isPlaying && !state.isPaused && state.playheadRatio <= 0);
     }
+    if (cropButton) {
+      cropButton.classList.toggle("is-engaged", state.cropMode);
+      cropButton.title = state.cropMode ? "Apply crop to the current viewport" : "Crop mode";
+      cropButton.setAttribute("aria-pressed", state.cropMode ? "true" : "false");
+    }
+    if (playSelectionButton) {
+      const hasScoreSelection = selectedScoreNotes().length > 0;
+      playSelectionButton.disabled = !hasScoreSelection;
+      playSelectionButton.title = hasScoreSelection ? "Play selection" : "Select one or more notes first";
+    }
     if (loopButton) {
       loopButton.classList.toggle("is-engaged", state.loopPlayback);
       loopButton.setAttribute("aria-pressed", state.loopPlayback ? "true" : "false");
@@ -4462,6 +4640,7 @@
     const range = visibleTimeRange();
     timelineOut.textContent = `${range.start.toFixed(2)} s - ${range.end.toFixed(2)} s`;
     if (timelineTrack && timelineThumb) {
+      timelineTrack.classList.toggle("is-crop-mode", state.cropMode);
       updateTimelineScrollbar();
     } else if (timelineInput) {
       timelineInput.max = String(maxViewOffset());
@@ -6109,6 +6288,117 @@
     state.sourceNode = null;
   }
 
+  function stopAuditionPlayback() {
+    if (!state.auditionSourceNode) {
+      return;
+    }
+    state.auditionSourceNode.onended = null;
+    try {
+      state.auditionSourceNode.stop();
+    } catch (error) {
+      // Ignore repeated stops from ended audition nodes.
+    }
+    try {
+      state.auditionSourceNode.disconnect();
+    } catch (error) {
+      // Ignore repeated disconnects.
+    }
+    state.auditionSourceNode = null;
+  }
+
+  function normalizeNotesForAudition(notes) {
+    const sourceNotes = (notes || [])
+      .filter((note) => note && Number.isFinite(note.startSec) && Number.isFinite(note.durationSec) && Number.isFinite(note.midi))
+      .map((note) => ({ ...note }))
+      .sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
+    if (!sourceNotes.length) {
+      return [];
+    }
+    const minStartSec = sourceNotes[0].startSec;
+    return sourceNotes.map((note) => ({
+      ...note,
+      startSec: Math.max(0, note.startSec - minStartSec),
+      durationSec: Math.max(0.02, note.durationSec)
+    }));
+  }
+
+  function applyAuditionFade(samples, fadeSamples = 192) {
+    if (!samples.length) {
+      return;
+    }
+    const edge = Math.min(fadeSamples, Math.floor(samples.length * 0.5));
+    for (let i = 0; i < edge; i += 1) {
+      const fadeIn = i / Math.max(1, edge);
+      const fadeOut = (edge - i) / Math.max(1, edge);
+      samples[i] *= fadeIn;
+      samples[samples.length - 1 - i] *= fadeOut;
+    }
+  }
+
+  async function playScoreNotePreview(notes, statusMessage = "") {
+    const previewNotes = normalizeNotesForAudition(notes);
+    if (!previewNotes.length) {
+      return false;
+    }
+    const requestId = state.auditionRequestId + 1;
+    state.auditionRequestId = requestId;
+    stopAuditionPlayback();
+    const previewDurationSec = clamp(
+      Math.max(...previewNotes.map((note) => note.startSec + note.durationSec)) + 0.25,
+      0.08,
+      12
+    );
+    const totalSamples = Math.max(1, Math.ceil(previewDurationSec * RENDER_SAMPLE_RATE));
+    const samples = await buildScoreEventAudioData(totalSamples, state.renderMode, state.noteBackend, {
+      scoreEvents: previewNotes
+    });
+    if (requestId !== state.auditionRequestId) {
+      return false;
+    }
+    const peak = audioPeak(samples);
+    if (peak > 1) {
+      const gain = 0.92 / peak;
+      for (let i = 0; i < samples.length; i += 1) {
+        samples[i] *= gain;
+      }
+    }
+    applyAuditionFade(samples);
+    const audioContext = createAudioContext();
+    await audioContext.resume();
+    if (requestId !== state.auditionRequestId) {
+      return false;
+    }
+    const source = createBufferFromSamples(audioContext, samples);
+    const sourceNode = audioContext.createBufferSource();
+    sourceNode.buffer = source;
+    sourceNode.connect(state.gainNode);
+    sourceNode.onended = () => {
+      if (state.auditionSourceNode === sourceNode) {
+        try {
+          sourceNode.disconnect();
+        } catch (error) {
+          // Ignore repeated disconnects after audition teardown.
+        }
+        state.auditionSourceNode = null;
+      }
+    };
+    state.auditionSourceNode = sourceNode;
+    sourceNode.start();
+    if (statusMessage) {
+      setStatus(statusMessage);
+    }
+    return true;
+  }
+
+  function previewSelectedScoreNotes() {
+    const notes = selectedScoreNotes();
+    if (!notes.length) {
+      return false;
+    }
+    void playScoreNotePreview(notes);
+    return true;
+  }
+
   function stopLiveSamplePlayback() {
     if (state.liveSampleGainNode && state.audioContext) {
       try {
@@ -6167,6 +6457,7 @@
 
   function stopPlayback(statusMessage) {
     cancelPendingTransport();
+    stopAuditionPlayback();
     stopActiveSource();
     stopLiveSamplePlayback();
     state.isPlaying = false;
@@ -7622,6 +7913,7 @@
   }
 
   async function renderSmplrScoreEvents(totalSamples, backend, options = {}) {
+    const scoreEvents = Array.isArray(options.scoreEvents) ? options.scoreEvents : state.scoreEvents;
     const writeStartSample = clamp(options.rangeStartSample ?? 0, 0, totalSamples);
     const writeEndSample = clamp(options.rangeEndSample ?? totalSamples, writeStartSample, totalSamples);
     const writeStartSec = writeStartSample / RENDER_SAMPLE_RATE;
@@ -7629,7 +7921,7 @@
     const tailSeconds = SMPLR_RENDER_TAIL_SECONDS;
     const prerollSeconds = SMPLR_RENDER_PREROLL_SECONDS;
     const stitchedSamples = new Float32Array(writeEndSample - writeStartSample);
-    const relevantNotes = state.scoreEvents.filter((note) => {
+    const relevantNotes = scoreEvents.filter((note) => {
       const noteStart = note.startSec;
       const noteEnd = note.startSec + Math.max(0.02, note.durationSec) + tailSeconds;
       return noteEnd > writeStartSec && noteStart < writeEndSec;
@@ -8017,8 +8309,9 @@
   }
 
   async function buildScoreEventAudioData(totalSamples, renderMode = state.renderMode, noteBackend = state.noteBackend, options = {}) {
+    const scoreEvents = Array.isArray(options.scoreEvents) ? options.scoreEvents : state.scoreEvents;
     const output = options.targetOutput || new Float32Array(totalSamples);
-    if (!state.scoreEvents.length) {
+    if (!scoreEvents.length) {
       if (options.targetOutput) {
         const emptyStart = clamp(options.rangeStartSample ?? 0, 0, totalSamples);
         const emptyEnd = clamp(options.rangeEndSample ?? totalSamples, emptyStart, totalSamples);
@@ -8057,6 +8350,7 @@
     if (SMPLR_NOTE_BACKENDS[effectiveNoteBackend]) {
       try {
         const rendered = await renderSmplrScoreEvents(totalSamples, effectiveNoteBackend, {
+          scoreEvents,
           rangeStartSample: writeStartSample,
           rangeEndSample: writeEndSample,
           onProgress: (ratio, detail, progressText) => {
@@ -8078,7 +8372,7 @@
         onProgress?.(progressStart, `${noteBackendName(failedBackend)} failed`, `Falling back to ${noteBackendName(effectiveNoteBackend).toLowerCase()}`);
       }
     }
-    const maybeYield = shouldUseCooperativeRender(totalSamples, state.scoreEvents.length)
+    const maybeYield = shouldUseCooperativeRender(totalSamples, scoreEvents.length)
       ? createRenderYieldController()
       : null;
 
@@ -8086,8 +8380,8 @@
       return clamp(Math.floor(seconds * RENDER_SAMPLE_RATE), 0, Math.max(0, totalSamples - 1));
     }
 
-    for (let noteIndex = 0; noteIndex < state.scoreEvents.length; noteIndex += 1) {
-      const note = state.scoreEvents[noteIndex];
+    for (let noteIndex = 0; noteIndex < scoreEvents.length; noteIndex += 1) {
+      const note = scoreEvents[noteIndex];
       const startSample = sampleIndexAt(note.startSec);
       const duration = Math.max(0.02, note.durationSec);
       const sampleLength = Math.min(totalSamples - startSample, Math.ceil(duration * RENDER_SAMPLE_RATE));
@@ -8132,7 +8426,7 @@
         }
       } catch (error) {
         throw new Error(
-          `Failed to synthesize score note ${noteIndex + 1}/${state.scoreEvents.length} at ${note.startSec.toFixed(2)} s: ${error && error.message ? error.message : String(error)}`
+          `Failed to synthesize score note ${noteIndex + 1}/${scoreEvents.length} at ${note.startSec.toFixed(2)} s: ${error && error.message ? error.message : String(error)}`
         );
       }
 
@@ -9542,6 +9836,7 @@
     if (state.transportPending === "play" || (state.isPlaying && !state.isPaused)) {
       return;
     }
+    stopAuditionPlayback();
     const requestId = ++state.transportRequestId;
     state.transportPending = "play";
     updateOutputs();
@@ -10998,6 +11293,9 @@
       setStatus(selectionCount
         ? `Selected ${selectionCount} note${selectionCount === 1 ? "" : "s"}.`
         : "No notes selected.");
+      if (selectionCount) {
+        previewSelectedScoreNotes();
+      }
     } else if (state.selectionRectStart) {
       const dx = Math.abs((state.selectionRectCurrent || state.selectionRectStart).col - state.selectionRectStart.col);
       const dy = Math.abs((state.selectionRectCurrent || state.selectionRectStart).row - state.selectionRectStart.row);
@@ -11039,6 +11337,9 @@
           ? `Selected ${selectionCount} note${selectionCount === 1 ? "" : "s"}${selectionCount && hasRaster ? " and " : ""}${hasRaster ? "a freehand region" : ""}.`
           : "No content selected."
       );
+      if (selectionCount) {
+        previewSelectedScoreNotes();
+      }
     } else if (state.rasterEditMode === "move") {
       const originalBounds = state.rasterEditOriginalSelection;
       const currentBounds = state.rasterSelection;
@@ -11054,11 +11355,25 @@
       }
       setStatus("Moved freehand selection.");
     } else if (state.scoreEditMode === "move-selection") {
+      const movedNotesPreview = (state.scoreEditSelectionIndices || [])
+        .map((index) => state.scoreEvents[index])
+        .filter(Boolean)
+        .map((note) => ({ ...note }));
       clearScoreSelection();
       state.scoreEvents = normalizeScoreNoteEvents(state.scoreEvents);
       setStatus("Moved selected notes.");
+      if (movedNotesPreview.length) {
+        void playScoreNotePreview(movedNotesPreview);
+      }
     } else if (state.scoreEditMode) {
+      const editedMode = state.scoreEditMode;
+      const movedNotePreview = editedMode === "move" && state.scoreEditIndex >= 0 && state.scoreEditIndex < state.scoreEvents.length
+        ? { ...state.scoreEvents[state.scoreEditIndex] }
+        : null;
       state.scoreEvents = normalizeScoreNoteEvents(state.scoreEvents);
+      if (movedNotePreview) {
+        void playScoreNotePreview([movedNotePreview]);
+      }
     } else if (state.tool === "line" && state.lineStart && state.linePreview) {
       stampLine(state.lineStart, state.linePreview, 1);
       markToolEditDirty(dirtyRangeFromPoints(state.lineStart, state.linePreview), {
@@ -11076,6 +11391,7 @@
           rangeStartSec: span.startSec,
           rangeEndSec: span.endSec
         });
+        void playScoreNotePreview([addedNote]);
       }
       state.noteDurationUnlocked = false;
       state.noteUnlockCol = null;
@@ -11225,6 +11541,9 @@
     state.isDraggingTimelineThumb = true;
     timelineThumb.classList.add("is-dragging");
     timelineTrack.setPointerCapture(event.pointerId);
+    if (state.cropMode) {
+      setStatus(cropModeStatusText());
+    }
   }
 
   function handleTimelinePointerMove(event) {
@@ -11257,6 +11576,9 @@
     timelineThumb.classList.remove("is-resizing-left", "is-resizing-right");
     if (event && timelineTrack.hasPointerCapture(event.pointerId)) {
       timelineTrack.releasePointerCapture(event.pointerId);
+    }
+    if (state.cropMode) {
+      setStatus(cropModeStatusText());
     }
   }
 
@@ -11592,6 +11914,20 @@
     stopButton.addEventListener("click", () => {
       stopPlayback("Playback stopped.");
     });
+    if (playSelectionButton) {
+      playSelectionButton.addEventListener("click", () => {
+        previewSelectedScoreNotes();
+      });
+    }
+    if (cropButton) {
+      cropButton.addEventListener("click", () => {
+        if (state.cropMode) {
+          commitCropMode();
+        } else {
+          enterCropMode();
+        }
+      });
+    }
     if (resetViewportButton) {
       resetViewportButton.addEventListener("click", () => {
         resetViewportToEditorDefault();
@@ -11674,6 +12010,11 @@
         setToolSettingsOpen(false);
         return;
       }
+      if (event.key === "Escape" && state.cropMode) {
+        event.preventDefault();
+        exitCropMode("Crop mode cancelled.");
+        return;
+      }
       if (state.scoreRepeatMode) {
         const target = event.target;
         if (!(target && /input|select|textarea/i.test(target.tagName))) {
@@ -11716,6 +12057,7 @@
         && hasEditorSelection()
       ) {
         event.preventDefault();
+        stopAuditionPlayback();
         clearEditorSelection();
         setStatus("Selection cleared.");
         renderCanvas();
@@ -11760,18 +12102,27 @@
       }
 
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "c") {
-        if (copyCurrentSelectionToClipboard()) {
+        if (state.cropMode) {
           event.preventDefault();
-          const selectedNotes = selectedScoreNotes();
-          const hasRaster = Boolean(state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection));
-          setStatus(
-            selectedNotes.length || hasRaster
-              ? `Copied ${selectedNotes.length ? `${selectedNotes.length} note${selectedNotes.length === 1 ? "" : "s"}` : ""}${selectedNotes.length && hasRaster ? " and " : ""}${hasRaster ? "a freehand region" : ""}.`
-              : "Copied note."
-          );
-          renderCanvas();
+          commitCropMode();
           return;
         }
+        if (cropSelectionHasCopyTarget()) {
+          if (copyCurrentSelectionToClipboard()) {
+            event.preventDefault();
+            const selectedNotes = selectedScoreNotes();
+            const hasRaster = Boolean(state.rasterSelection && rasterSelectionHasEnergy(state.rasterSelection));
+            setStatus(
+              selectedNotes.length || hasRaster
+                ? `Copied ${selectedNotes.length ? `${selectedNotes.length} note${selectedNotes.length === 1 ? "" : "s"}` : ""}${selectedNotes.length && hasRaster ? " and " : ""}${hasRaster ? "a freehand region" : ""}.`
+                : "Copied note."
+            );
+            renderCanvas();
+          }
+          return;
+        }
+        event.preventDefault();
+        enterCropMode();
         return;
       }
 
@@ -11833,6 +12184,13 @@
           pausePlayback();
         } else {
           playAudio();
+        }
+        return;
+      }
+
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "p") {
+        if (previewSelectedScoreNotes()) {
+          event.preventDefault();
         }
         return;
       }

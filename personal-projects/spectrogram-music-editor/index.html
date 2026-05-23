@@ -350,6 +350,8 @@
                       <div class="help-grid">
                         <span><strong>Space</strong></span><span>Play or pause</span>
                         <span><strong>S</strong></span><span>Stop playback</span>
+                        <span><strong>P</strong></span><span>Play the current note selection</span>
+                        <span><strong>Ctrl+C</strong></span><span>Enter crop mode, then press <strong>Ctrl+C</strong> again to crop to the current viewport or <strong>Esc</strong> to cancel</span>
                         <span><strong>X</strong></span><span>Reset the viewport to the default editor view</span>
                         <span><strong>Scroll</strong></span><span>Zoom in time</span>
                         <span><strong>Ctrl + Scroll</strong></span><span>Zoom in frequency</span>
@@ -387,7 +389,7 @@
                     <section class="help-section">
                       <h4>Clipboard and Undo</h4>
                       <div class="help-grid">
-                        <span><strong>Ctrl+C</strong></span><span>Copy the hovered item or current selection</span>
+                        <span><strong>Ctrl+C</strong></span><span>Copy the hovered item or current selection when a note or freehand selection copy target is active</span>
                         <span><strong>Ctrl+X</strong></span><span>Cut the hovered item or current selection</span>
                         <span><strong>Ctrl+V</strong></span><span>Paste copied notes or freehand regions</span>
                         <span><strong>Ctrl+D</strong></span><span>Duplicate the current note or selection to the right</span>
@@ -564,6 +566,13 @@
                       <span class="transport-shortcut-badge" aria-hidden="true">S</span>
                       <span class="sr-only">Stop</span>
                     </button>
+                    <button id="play-selection-btn" type="button" class="action-btn transport-btn" aria-label="Play selection" title="Play selection">
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M7 7h3v10H7z"/><path d="M12 7h3v10h-3z"/><path d="M16 7l5 5-5 5z" fill="currentColor" stroke="none"/></svg>
+                      </span>
+                      <span class="transport-shortcut-badge" aria-hidden="true">P</span>
+                      <span class="sr-only">Play selection</span>
+                    </button>
                     <button id="loop-btn" type="button" class="action-btn transport-btn" aria-label="Loop playback" aria-pressed="false" title="Loop playback">
                       <span class="tool-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24">
@@ -607,6 +616,13 @@
                       </span>
                       <span class="transport-shortcut-badge" aria-hidden="true">Ctrl+Z</span>
                       <span class="sr-only">Undo</span>
+                    </button>
+                    <button id="crop-btn" type="button" class="action-btn transport-btn" aria-label="Crop mode" title="Crop mode">
+                      <span class="tool-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M7 4v10.5A2.5 2.5 0 0 0 9.5 17H20"/><path d="M4 7h10.5A2.5 2.5 0 0 1 17 9.5V20"/><path d="M14.5 14.5l5 5"/><circle cx="12.2" cy="12.2" r="3.3"/></svg>
+                      </span>
+                      <span class="transport-shortcut-badge" aria-hidden="true">Ctrl+C</span>
+                      <span class="sr-only">Crop mode</span>
                     </button>
                     <button id="clear-btn" type="button" class="action-btn transport-btn danger-btn" aria-label="Clear editor" title="Clear editor">
                       <span class="tool-icon" aria-hidden="true">
