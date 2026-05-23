@@ -101,6 +101,15 @@
       }
     };
 
+    function followPlaybackViewportOnStart() {
+      const playheadCol = playheadColumn();
+      const viewportMidCol = visibleStartCol() + visibleColCount() / 2;
+      if (playheadCol <= viewportMidCol) {
+        return;
+      }
+      followPlaybackViewport({ allowBackward: true });
+    }
+
     const canvas = document.getElementById("spectrogram-canvas");
     if (!canvas) {
       throw new Error("Missing #spectrogram-canvas element.");
@@ -318,6 +327,10 @@
       playheadRatio: 0,
       pausedOffsetSeconds: 0,
       isScrubbingPlayhead: false,
+      timeToolDragStartClientX: 0,
+      timeToolDragStartClientY: 0,
+      timeToolDragStartOffsetCol: 0,
+      timeToolDidPan: false,
       isDraggingTimelineThumb: false,
       timelineDragOffsetPx: 0,
       timelineDragMode: "",
@@ -1492,6 +1505,7 @@
   }
 
   function buildTabSettingsFromCurrentState() {
+    const currentTab = currentTabRecord();
     return {
       durationSeconds: durationSeconds(),
       gain: 1,
@@ -1516,6 +1530,7 @@
         "violin-score": { ...state.scoreViewFreqs["violin-score"] },
         "piano-score": { ...state.scoreViewFreqs["piano-score"] }
       },
+      projectFilename: currentTab?.settings?.projectFilename || "",
       viewOffsetCol: state.viewOffsetCol,
       viewColSpan: state.viewColSpan,
       showGrid: Boolean(gridToggle && gridToggle.checked),
@@ -4006,12 +4021,83 @@
     }
   }
 
-  function saveSoundpaintProject() {
-    const project = buildSoundpaintProject();
-    const activeTab = currentTabRecord();
-    const filename = sanitizedProjectFilename(activeTab ? activeTab.name : "soundpaint");
-    downloadTextFile(filename, JSON.stringify(project, null, 2));
-    setStatus(`Project saved as ${filename}.`);
+  function normalizeProjectSaveBaseName(name, fallback = "Project-1") {
+    const normalized = String(name || "").trim().replace(/\.soundpaint\.json$/i, "").replace(/\.json$/i, "");
+    return normalized || fallback;
+  }
+
+  function projectSaveFilenameFromBaseName(name) {
+    const baseName = normalizeProjectSaveBaseName(name)
+      .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return `${baseName || "Project-1"}.soundpaint.json`;
+  }
+
+  function projectBaseNameFromFilename(filename) {
+    return normalizeProjectSaveBaseName(filename, "Project-1");
+  }
+
+  async function writeProjectToFileHandle(handle, text) {
+    const writable = await handle.createWritable();
+    try {
+      await writable.write(text);
+    } finally {
+      await writable.close();
+    }
+  }
+
+  async function saveSoundpaintProject() {
+    try {
+      const project = buildSoundpaintProject();
+      const activeTab = currentTabRecord();
+      if (!activeTab) {
+        return;
+      }
+      const text = JSON.stringify(project, null, 2);
+      const defaultBaseName = normalizeProjectSaveBaseName(activeTab.name || "Project-1");
+      let filename = activeTab.settings?.projectFilename || "";
+      const hasExistingTarget = Boolean(activeTab.fileHandle || filename);
+
+      if (!filename) {
+        filename = projectSaveFilenameFromBaseName(defaultBaseName);
+      } else if (!window.confirm(`Overwrite ${filename}?`)) {
+        setStatus("Project save cancelled.");
+        return;
+      }
+
+      if (!("showSaveFilePicker" in window)) {
+        throw new Error("This browser does not support the File System Access API.");
+      }
+      if (!activeTab.fileHandle) {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [
+            {
+              description: "Soundpaint project",
+              accept: { "application/json": [".soundpaint.json", ".json"] }
+            }
+          ]
+        });
+        activeTab.fileHandle = handle;
+        filename = handle.name || filename;
+        activeTab.name = projectBaseNameFromFilename(filename);
+        activeTab.settings = activeTab.settings || {};
+        activeTab.settings.projectFilename = filename;
+        updateWorkspaceUi();
+      }
+      await writeProjectToFileHandle(activeTab.fileHandle, text);
+      saveCurrentTabState();
+      scheduleSessionProjectSave();
+      setStatus(`Project saved as ${filename}${hasExistingTarget ? "." : " and tab renamed."}`);
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        setStatus("Project save cancelled.");
+        return;
+      }
+      throw error;
+    }
   }
 
   function applySoundpaintProject(project, options = {}) {
@@ -4019,25 +4105,47 @@
       throw new Error("Not a valid soundpaint project file.");
     }
 
+    function importedProjectTabName(fallback, index = 1) {
+      const preferred = typeof options.projectName === "string" && options.projectName.trim()
+        ? options.projectName.trim()
+        : "";
+      if (!preferred) {
+        return fallback || `Project-${index}`;
+      }
+      return index > 1 ? `${preferred}-${index}` : preferred;
+    }
+
     if (Array.isArray(project.tabs) && project.tabs.length) {
-      state.tabs = project.tabs.map((tabPayload, index) => {
-        const layers = Array.isArray(tabPayload.layers) && tabPayload.layers.length
+      const importedTabs = project.tabs.map((tabPayload, index) => {
+        const sourceLayers = Array.isArray(tabPayload.layers) && tabPayload.layers.length
           ? tabPayload.layers.map((layerPayload, layerIndex) => deserializeLayerRecord(layerPayload, `Layer ${layerIndex + 1}`))
           : [createEmptyLayer("Layer 1")];
+        const activeLayerIndex = Math.max(0, sourceLayers.findIndex((layer) => layer.id === tabPayload.activeLayerId));
+        const layers = options.mergeTabs
+          ? sourceLayers.map((layer) => cloneLayerRecord(layer, layer.name))
+          : sourceLayers;
         return {
-          id: typeof tabPayload.id === "string" ? tabPayload.id : `tab-${nextTabId++}`,
-          name: typeof tabPayload.name === "string" ? tabPayload.name : `Project-${index + 1}`,
-          activeLayerId: typeof tabPayload.activeLayerId === "string" ? tabPayload.activeLayerId : layers[0].id,
+          id: options.mergeTabs ? `tab-${nextTabId++}` : (typeof tabPayload.id === "string" ? tabPayload.id : `tab-${nextTabId++}`),
+          name: typeof tabPayload.name === "string" ? tabPayload.name : importedProjectTabName("", index + 1),
+          activeLayerId: layers[Math.min(activeLayerIndex, layers.length - 1)].id,
           settings: tabPayload.settings || buildTabSettingsFromCurrentState(),
           layers
         };
       });
-      state.currentTabId = state.tabs.some((tab) => tab.id === project.currentTabId)
-        ? project.currentTabId
-        : state.tabs[0].id;
-      state.clipboardLayer = project.clipboardLayer
-        ? deserializeLayerRecord(project.clipboardLayer, project.clipboardLayer.name || "Clipboard layer")
-        : null;
+
+      if (options.mergeTabs) {
+        saveCurrentTabState();
+        state.tabs.push(...importedTabs);
+        state.currentTabId = importedTabs[0].id;
+      } else {
+        state.tabs = importedTabs;
+        state.currentTabId = state.tabs.some((tab) => tab.id === project.currentTabId)
+          ? project.currentTabId
+          : state.tabs[0].id;
+        state.clipboardLayer = project.clipboardLayer
+          ? deserializeLayerRecord(project.clipboardLayer, project.clipboardLayer.name || "Clipboard layer")
+          : null;
+      }
       refreshWorkspaceIdCounters();
       const activeTab = currentTabRecord();
       applyTabSettings(activeTab.settings || buildTabSettingsFromCurrentState());
@@ -4048,7 +4156,12 @@
       updateOutputs();
       markDirty({ resetFrequencyReference: false });
       persistSessionProjectNow();
-      stopPlayback(options.statusMessage || "Project loaded from soundpaint.json.");
+      stopPlayback(
+        options.statusMessage
+        || (options.mergeTabs
+          ? `Loaded ${importedTabs.length} project tab${importedTabs.length === 1 ? "" : "s"} into the workspace.`
+          : "Project loaded from soundpaint.json.")
+      );
       renderCanvas();
       return;
     }
@@ -4060,14 +4173,20 @@
     legacyLayer.scoreEvents = cloneEventList(Array.isArray(project.events?.scoreEvents) ? project.events.scoreEvents : []);
     const legacyTab = {
       id: `tab-${nextTabId++}`,
-      name: "Project-1",
+      name: importedProjectTabName("Project-1"),
       activeLayerId: legacyLayer.id,
       settings: project.settings || buildTabSettingsFromCurrentState(),
       layers: [legacyLayer]
     };
-    state.tabs = [legacyTab];
-    state.currentTabId = legacyTab.id;
-    state.clipboardLayer = null;
+    if (options.mergeTabs) {
+      saveCurrentTabState();
+      state.tabs.push(legacyTab);
+      state.currentTabId = legacyTab.id;
+    } else {
+      state.tabs = [legacyTab];
+      state.currentTabId = legacyTab.id;
+      state.clipboardLayer = null;
+    }
     refreshWorkspaceIdCounters();
     applyTabSettings(legacyTab.settings);
     bindActiveLayer(legacyLayer);
@@ -4077,7 +4196,12 @@
     updateOutputs();
     markDirty({ resetFrequencyReference: false });
     persistSessionProjectNow();
-    stopPlayback(options.statusMessage || "Project loaded from soundpaint.json.");
+    stopPlayback(
+      options.statusMessage
+      || (options.mergeTabs
+        ? "Loaded project into a new tab."
+        : "Project loaded from soundpaint.json.")
+    );
     renderCanvas();
   }
 
@@ -4089,7 +4213,12 @@
     } catch (error) {
       throw new Error("Project file is not valid JSON.");
     }
-    applySoundpaintProject(project);
+    const baseName = String(file.name || "Project-1").replace(/\.soundpaint\.json$/i, "").replace(/\.json$/i, "");
+    applySoundpaintProject(project, {
+      mergeTabs: true,
+      projectName: baseName,
+      statusMessage: `Loaded project ${file.name} into new tab${Array.isArray(project.tabs) && project.tabs.length > 1 ? "s" : ""}.`
+    });
   }
 
   function captureEditorSnapshot() {
@@ -9397,7 +9526,7 @@
     } else {
       state.sourceNode = null;
     }
-    followPlaybackViewport({ allowBackward: true });
+    followPlaybackViewportOnStart();
     scheduleLiveSampleWindows();
     startLiveSampleSchedulerTimer();
     state.transportPending = "";
@@ -9477,7 +9606,7 @@
     state.playStartedAt = audioContext.currentTime - startOffset;
     state.playheadRatio = buffer.duration > 0 ? startOffset / buffer.duration : 0;
     state.lastPlaybackLoopIndex = 0;
-    followPlaybackViewport({ allowBackward: true });
+  followPlaybackViewportOnStart();
     source.start(0, startOffset);
     state.transportPending = "";
     setStatus(state.loopPlayback ? "Playing rendered audio in loop mode." : "Playing rendered audio.");
@@ -10440,13 +10569,16 @@
       }
       state.pointerId = event.pointerId;
       state.isScrubbingPlayhead = true;
+      state.timeToolDragStartClientX = event.clientX;
+      state.timeToolDragStartClientY = event.clientY;
+      state.timeToolDragStartOffsetCol = state.viewOffsetCol;
+      state.timeToolDidPan = false;
       state.drawing = false;
       state.currentPointer = point;
       state.pointerInside = true;
-      setPlayheadFromColumn(point.col);
       updateCursorReadout(point);
       canvas.setPointerCapture(event.pointerId);
-      setStatus(timelinePositionStatus());
+      setStatus("Click to set the current time, or drag to shift the viewport.");
       renderCanvas();
       return;
     }
@@ -10685,8 +10817,16 @@
     }
 
     if (state.isScrubbingPlayhead && state.pointerId === event.pointerId) {
-      setPlayheadFromColumn(point.col);
-      setStatus(timelinePositionStatus());
+      const dx = event.clientX - state.timeToolDragStartClientX;
+      const dy = event.clientY - state.timeToolDragStartClientY;
+      if (!state.timeToolDidPan && Math.hypot(dx, dy) > 4) {
+        state.timeToolDidPan = true;
+      }
+      if (state.timeToolDidPan) {
+        const colDelta = (dx / Math.max(1, plotWidth())) * Math.max(1, visibleColCount() - 1);
+        setViewWindow(state.timeToolDragStartOffsetCol - colDelta, visibleColCount(), { render: false });
+        setStatus("Shifting viewport in time.");
+      }
     } else if (state.drawing && state.pointerId === event.pointerId) {
       if (state.zoomRectStart) {
         state.zoomRectCurrent = point;
@@ -10829,7 +10969,17 @@
     }
 
     if (state.isScrubbingPlayhead) {
+      if (state.timeToolDidPan) {
+        setStatus("Viewport shifted in time.");
+      } else if (state.currentPointer) {
+        setPlayheadFromColumn(state.currentPointer.col);
+        setStatus(timelinePositionStatus());
+      }
       state.isScrubbingPlayhead = false;
+      state.timeToolDragStartClientX = 0;
+      state.timeToolDragStartClientY = 0;
+      state.timeToolDragStartOffsetCol = 0;
+      state.timeToolDidPan = false;
       state.pointerId = null;
       updateCanvasCursor(state.currentPointer);
       renderCanvas();
@@ -11269,8 +11419,8 @@
     }
 
     if (projectSaveButton) {
-      projectSaveButton.addEventListener("click", () => {
-        saveSoundpaintProject();
+      projectSaveButton.addEventListener("click", async () => {
+        await saveSoundpaintProject();
         closeMenuForElement(projectSaveButton);
       });
     }
@@ -11664,6 +11814,13 @@
       }
 
       if (event.key === "Delete" || event.key === "Backspace") {
+        if (deleteCurrentSelection()) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "d") {
         if (deleteCurrentSelection()) {
           event.preventDefault();
         }
