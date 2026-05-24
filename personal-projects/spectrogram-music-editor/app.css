@@ -315,15 +315,22 @@
 }
 
 .layer-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.52rem;
-  padding: 0.46rem 0.08rem 0.46rem 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.28rem;
+  padding: 0.46rem 0.08rem 0.52rem 0;
   border: 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 0;
   background: transparent;
+}
+
+.layer-row-top {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, 1fr) minmax(0, 10.75rem);
+  align-items: center;
+  gap: 0.52rem;
 }
 
 .layer-row.is-active {
@@ -336,6 +343,7 @@
 }
 
 .layer-name-btn {
+  display: block;
   appearance: none;
   border: 0;
   background: transparent;
@@ -344,7 +352,7 @@
   text-align: left;
   padding: 0;
   cursor: pointer;
-  min-width: 0;
+  min-width: 6.5rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -363,6 +371,36 @@
   display: inline-flex;
   align-items: center;
   gap: 0.18rem;
+  padding-left: 0;
+}
+
+.layer-backend-select {
+  appearance: none;
+  min-width: 0;
+  width: 100%;
+  max-width: 10.75rem;
+  height: 1.68rem;
+  padding: 0 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  background: linear-gradient(180deg, rgba(18, 26, 43, 0.95), rgba(11, 16, 32, 0.96));
+  background-color: rgba(18, 26, 43, 0.95);
+  color: #d7e6ff;
+  font: inherit;
+  font-size: 0.76rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.layer-backend-select:hover,
+.layer-backend-select:focus {
+  border-color: rgba(103, 212, 255, 0.28);
+  outline: none;
+}
+
+.layer-backend-select option {
+  background: rgba(18, 26, 43, 0.98);
+  color: #d7e6ff;
 }
 
 .layer-icon-btn,

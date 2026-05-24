@@ -79,6 +79,90 @@
         kit: "MusyngKite",
         loadLoopData: false
       },
+      "viola-samples": {
+        label: "Viola samples",
+        kind: "soundfont",
+        instrument: "viola",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "contrabass-samples": {
+        label: "Contrabass samples",
+        kind: "soundfont",
+        instrument: "contrabass",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "piccolo-samples": {
+        label: "Piccolo samples",
+        kind: "soundfont",
+        instrument: "piccolo",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "flute-samples": {
+        label: "Flute samples",
+        kind: "soundfont",
+        instrument: "flute",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "oboe-samples": {
+        label: "Oboe samples",
+        kind: "soundfont",
+        instrument: "oboe",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "clarinet-samples": {
+        label: "Clarinet samples",
+        kind: "soundfont",
+        instrument: "clarinet",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "bassoon-samples": {
+        label: "Bassoon samples",
+        kind: "soundfont",
+        instrument: "bassoon",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "french-horn-samples": {
+        label: "French horn samples",
+        kind: "soundfont",
+        instrument: "french_horn",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "trumpet-samples": {
+        label: "Trumpet samples",
+        kind: "soundfont",
+        instrument: "trumpet",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "trombone-samples": {
+        label: "Trombone samples",
+        kind: "soundfont",
+        instrument: "trombone",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "tuba-samples": {
+        label: "Tuba samples",
+        kind: "soundfont",
+        instrument: "tuba",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
+      "timpani-samples": {
+        label: "Timpani samples",
+        kind: "soundfont",
+        instrument: "timpani",
+        kit: "MusyngKite",
+        loadLoopData: false
+      },
       "pipe-organ-samples": {
         label: "Pipe organ samples",
         kind: "soundfont",
@@ -360,6 +444,7 @@
       liveSampleGainNode: null,
       liveSampleStopFns: [],
       liveSampleScoreEvents: [],
+      liveSampleScoreLayers: [],
       liveSampleScheduledUntilSec: 0,
       liveSampleRenderedWindows: new Set(),
       liveSampleRenderingWindows: new Set(),
@@ -1258,9 +1343,10 @@
 
   function sampleNoteBackendSupportsProgressivePlay() {
     const compositeScoreCount = currentRenderLayerState().scoreEvents.length;
+    const hasSampleScoreLayer = scoreLayersForRender().some((layer) => SMPLR_NOTE_BACKENDS[layer.noteBackend]);
     return Boolean(
       !state.loopPlayback
-      && SMPLR_NOTE_BACKENDS[state.noteBackend]
+      && hasSampleScoreLayer
       && (compositeScoreCount || state.scoreEvents.length)
     );
   }
@@ -1284,7 +1370,7 @@
       if (state.renderCache.renderMode !== state.renderMode) {
         return false;
       }
-      if (state.renderCache.noteBackend !== state.noteBackend) {
+      if (state.renderCache.noteBackend !== scoreLayerBackendSignature()) {
         return false;
       }
     }
@@ -1486,11 +1572,36 @@
     return 120;
   }
 
-  function createEmptyLayer(name = `Layer ${nextLayerId}`) {
+  function defaultLayerNoteBackend() {
+    return isValidNoteBackend(state?.noteBackend)
+      ? state.noteBackend
+      : preferredNoteBackendForEditorView(state?.editorView || "spectrogram");
+  }
+
+  function normalizedLayerNoteBackend(backend, fallback = defaultLayerNoteBackend()) {
+    if (isValidNoteBackend(backend)) {
+      return backend;
+    }
+    if (isValidNoteBackend(fallback)) {
+      return fallback;
+    }
+    return "procedural";
+  }
+
+  function layerNoteBackend(layer) {
+    return normalizedLayerNoteBackend(layer?.noteBackend, state.noteBackend);
+  }
+
+  function currentLayerNoteBackend() {
+    return layerNoteBackend(currentLayerRecord());
+  }
+
+  function createEmptyLayer(name = `Layer ${nextLayerId}`, noteBackend = defaultLayerNoteBackend()) {
     return {
       id: `layer-${nextLayerId++}`,
       name,
       visible: true,
+      noteBackend: normalizedLayerNoteBackend(noteBackend),
       drawData: new Float32Array(trackColCount() * GRID_ROWS),
       basslineData: new Float32Array(trackColCount() * GRID_ROWS),
       bassEvents: [],
@@ -1503,6 +1614,7 @@
       id: `layer-${nextLayerId++}`,
       name,
       visible: layer.visible !== false,
+      noteBackend: layerNoteBackend(layer),
       drawData: layer.drawData.slice(),
       basslineData: layer.basslineData.slice(),
       bassEvents: cloneEventList(layer.bassEvents || []),
@@ -1680,6 +1792,11 @@
     basslineData = layer.basslineData;
     state.bassEvents = layer.bassEvents;
     state.scoreEvents = layer.scoreEvents;
+    state.noteBackend = layerNoteBackend(layer);
+    if (noteBackendSelect) {
+      noteBackendSelect.value = state.noteBackend;
+      noteBackendSelect.title = noteBackendName(state.noteBackend);
+    }
   }
 
   function saveCurrentTabState() {
@@ -1708,6 +1825,51 @@
       return [];
     }
     return tab.layers.filter((layer) => layer.visible !== false);
+  }
+
+  function visibleScoreLayersInCurrentTab() {
+    return visibleLayersInCurrentTab().filter((layer) => Array.isArray(layer.scoreEvents) && layer.scoreEvents.length);
+  }
+
+  function scoreLayersForRender(options = {}) {
+    if (Array.isArray(options.scoreLayers)) {
+      return options.scoreLayers
+        .map((layer, index) => ({
+          id: typeof layer.id === "string" ? layer.id : `score-layer-${index + 1}`,
+          name: typeof layer.name === "string" ? layer.name : `Layer ${index + 1}`,
+          noteBackend: normalizedLayerNoteBackend(layer.noteBackend, state.noteBackend),
+          scoreEvents: normalizeScoreNoteEvents(Array.isArray(layer.scoreEvents) ? layer.scoreEvents : [])
+        }))
+        .filter((layer) => layer.scoreEvents.length);
+    }
+    const visibleScoreLayers = visibleScoreLayersInCurrentTab();
+    if (visibleScoreLayers.length) {
+      return visibleScoreLayers.map((layer) => ({
+        id: layer.id,
+        name: layer.name,
+        noteBackend: layerNoteBackend(layer),
+        scoreEvents: normalizeScoreNoteEvents(layer.scoreEvents || [])
+      }));
+    }
+    if (state.scoreEvents.length) {
+      return [{
+        id: state.activeLayerId || "score-layer-active",
+        name: currentLayerRecord()?.name || "Layer 1",
+        noteBackend: normalizedLayerNoteBackend(state.noteBackend),
+        scoreEvents: normalizeScoreNoteEvents(state.scoreEvents)
+      }];
+    }
+    return [];
+  }
+
+  function scoreLayerBackendSignature() {
+    const visibleScoreLayers = visibleScoreLayersInCurrentTab();
+    if (visibleScoreLayers.length) {
+      return visibleScoreLayers
+        .map((layer) => `${layer.id}:${layerNoteBackend(layer)}`)
+        .join("|");
+    }
+    return normalizedLayerNoteBackend(state.noteBackend);
   }
 
   function currentTabUsesCompositeLayers() {
@@ -1854,10 +2016,14 @@
       cut: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6.5" cy="17.2" r="2.3"/><circle cx="17.5" cy="17.2" r="2.3"/><path d="M8.3 15.6L18 6"/><path d="M8.5 6l7 7"/></svg>`,
       delete: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10"/><path d="M17 7L7 17"/></svg>`
     };
+    const backendOptions = availableNoteBackendOptions();
     for (const layer of tab.layers) {
       const row = document.createElement("div");
       row.className = `layer-row${layer.id === state.activeLayerId ? " is-active" : ""}${layer.visible === false ? " is-hidden" : ""}`;
       row.setAttribute("role", "listitem");
+
+      const topRow = document.createElement("div");
+      topRow.className = "layer-row-top";
 
       const nameBtn = document.createElement("button");
       nameBtn.type = "button";
@@ -1877,6 +2043,26 @@
 
       const actions = document.createElement("div");
       actions.className = "layer-actions-inline";
+
+      const backendSelect = document.createElement("select");
+      backendSelect.className = "layer-backend-select";
+      backendSelect.setAttribute("aria-label", `Sampler for ${layer.name}`);
+      backendSelect.title = `Sampler for ${layer.name}`;
+      for (const optionDef of backendOptions) {
+        const option = document.createElement("option");
+        option.value = optionDef.value;
+        option.textContent = optionDef.label;
+        option.title = optionDef.label;
+        backendSelect.appendChild(option);
+      }
+      backendSelect.value = layerNoteBackend(layer);
+      backendSelect.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+      backendSelect.addEventListener("change", (event) => {
+        event.stopPropagation();
+        setLayerNoteBackend(layer, backendSelect.value);
+      });
 
       const visibilityBtn = document.createElement("button");
       visibilityBtn.type = "button";
@@ -1933,8 +2119,9 @@
         deleteCurrentLayer();
       });
 
+      topRow.append(nameBtn, backendSelect);
       actions.append(visibilityBtn, copyBtn, cutBtn, deleteBtn);
-      row.append(nameBtn, actions);
+      row.append(topRow, actions);
       layerList.appendChild(row);
     }
     if (pasteLayerButton) {
@@ -1970,6 +2157,34 @@
     }
     nextTabId = Math.max(nextTabId, maxTab + 1);
     nextLayerId = Math.max(nextLayerId, maxLayer + 1);
+  }
+
+  function setLayerNoteBackend(layer, backend, options = {}) {
+    if (!layer) {
+      return false;
+    }
+    const normalized = normalizedLayerNoteBackend(backend, state.noteBackend);
+    if (layer.noteBackend === normalized) {
+      return false;
+    }
+    layer.noteBackend = normalized;
+    if (layer.id === state.activeLayerId) {
+      state.noteBackend = normalized;
+      if (noteBackendSelect) {
+        noteBackendSelect.value = normalized;
+        noteBackendSelect.title = noteBackendName(normalized);
+      }
+    }
+    markDirty();
+    updateWorkspaceUi();
+    updateOutputs();
+    scheduleSessionProjectSave();
+    if (options.statusMessage) {
+      stopPlayback(options.statusMessage);
+    } else {
+      stopPlayback(`Layer "${layer.name}" sampler set to ${noteBackendName(normalized)}.`);
+    }
+    return true;
   }
 
   function switchToTab(tabId) {
@@ -2237,6 +2452,16 @@
       return SMPLR_NOTE_BACKENDS[backend].label;
     }
     return "Procedural synth";
+  }
+
+  function availableNoteBackendOptions() {
+    return [
+      { value: "procedural", label: noteBackendName("procedural") },
+      ...Object.keys(SMPLR_NOTE_BACKENDS).map((value) => ({
+        value,
+        label: noteBackendName(value)
+      }))
+    ];
   }
 
   function resolvedNoteBackendName() {
@@ -3938,7 +4163,7 @@
       && !layersRequireFullRender()
       && state.renderCache.totalSamples === totalRenderSamples()
       && state.renderCache.renderMode === state.renderMode
-      && state.renderCache.noteBackend === state.noteBackend;
+      && state.renderCache.noteBackend === scoreLayerBackendSignature();
     if (!canIncremental) {
       state.dirtyRender = {
         full: true,
@@ -4105,6 +4330,7 @@
       id: layer.id,
       name: layer.name,
       visible: layer.visible !== false,
+      noteBackend: layerNoteBackend(layer),
       layers: {
         drawData: sparseLayerData(layer.drawData),
         basslineData: sparseLayerData(layer.basslineData)
@@ -4117,7 +4343,10 @@
   }
 
   function deserializeLayerRecord(payload, fallbackName = `Layer ${nextLayerId}`) {
-    const layer = createEmptyLayer(typeof payload?.name === "string" ? payload.name : fallbackName);
+    const layer = createEmptyLayer(
+      typeof payload?.name === "string" ? payload.name : fallbackName,
+      normalizedLayerNoteBackend(payload?.noteBackend, state.noteBackend)
+    );
     if (payload && typeof payload.id === "string") {
       layer.id = payload.id;
     }
@@ -6350,7 +6579,7 @@
       12
     );
     const totalSamples = Math.max(1, Math.ceil(previewDurationSec * RENDER_SAMPLE_RATE));
-    const samples = await buildScoreEventAudioData(totalSamples, state.renderMode, state.noteBackend, {
+    const samples = await buildScoreEventAudioData(totalSamples, state.renderMode, currentLayerNoteBackend(), {
       scoreEvents: previewNotes
     });
     if (requestId !== state.auditionRequestId) {
@@ -6449,6 +6678,7 @@
     state.liveSampleGainNode = null;
     state.liveSampleScheduledUntilSec = 0;
     state.liveSampleScoreEvents = [];
+    state.liveSampleScoreLayers = [];
     state.liveSampleRenderedWindows = new Set();
     state.liveSampleRenderingWindows = new Set();
     state.liveSampleUsesProgressive = false;
@@ -8444,6 +8674,55 @@
     return output;
   }
 
+  async function buildMixedScoreEventAudioData(totalSamples, options = {}) {
+    const {
+      onProgress,
+      progressStart = 0,
+      progressEnd = 1,
+      rangeStartSample = 0,
+      rangeEndSample = totalSamples,
+      targetOutput = null
+    } = options;
+    const scoreLayers = scoreLayersForRender(options);
+    const output = targetOutput || new Float32Array(totalSamples);
+    const writeStartSample = clamp(rangeStartSample, 0, totalSamples);
+    const writeEndSample = clamp(rangeEndSample, writeStartSample, totalSamples);
+    clearSampleRange(output, writeStartSample, writeEndSample);
+    if (!scoreLayers.length) {
+      return output;
+    }
+    const weightedNoteCount = scoreLayers.reduce(
+      (sum, layer) => sum + Math.max(1, layer.scoreEvents.length),
+      0
+    );
+    let consumedWeight = 0;
+    for (const layer of scoreLayers) {
+      const layerWeight = Math.max(1, layer.scoreEvents.length);
+      const layerProgressStart = lerp(progressStart, progressEnd, consumedWeight / weightedNoteCount);
+      consumedWeight += layerWeight;
+      const layerProgressEnd = lerp(progressStart, progressEnd, consumedWeight / weightedNoteCount);
+      const layerSamples = await buildScoreEventAudioData(totalSamples, state.renderMode, layer.noteBackend, {
+        scoreEvents: layer.scoreEvents,
+        rangeStartSample: writeStartSample,
+        rangeEndSample: writeEndSample,
+        onProgress: (progress, detail, progressText) => {
+          const mapped = lerp(layerProgressStart, layerProgressEnd, progress);
+          onProgress?.(
+            mapped,
+            `${layer.name}: ${detail || `Rendering ${noteBackendName(layer.noteBackend).toLowerCase()}`}`,
+            progressText
+          );
+        },
+        progressStart: 0,
+        progressEnd: 1
+      });
+      for (let i = writeStartSample; i < writeEndSample; i += 1) {
+        output[i] += layerSamples[i];
+      }
+    }
+    return output;
+  }
+
   function combineDrawLayers(totalSamples, primarySamples, residualSamples, residualGain, options = {}) {
     const targetOutput = options.targetOutput || null;
     const rangeStartSample = clamp(
@@ -8975,7 +9254,7 @@
     const maybeYield = shouldUseCooperativeRender(totalSamples, state.scoreEvents.length)
       ? createRenderYieldController()
       : null;
-    const score = await buildScoreEventAudioData(totalSamples, state.renderMode, state.noteBackend, {
+    const score = await buildMixedScoreEventAudioData(totalSamples, {
       onProgress,
       progressStart: scoreProgressStart,
       progressEnd: scoreProgressEnd
@@ -9049,7 +9328,7 @@
     }
 
     const totalSamples = totalRenderSamples();
-    if (cache.totalSamples !== totalSamples || cache.renderMode !== state.renderMode || cache.noteBackend !== state.noteBackend) {
+    if (cache.totalSamples !== totalSamples || cache.renderMode !== state.renderMode || cache.noteBackend !== scoreLayerBackendSignature()) {
       state.dirtyRender.full = true;
       return buildAudioData(options);
     }
@@ -9122,7 +9401,7 @@
 
     onProgress?.(0.52, "Updating changed section");
     if (state.dirtyRender.layers.score) {
-      await buildScoreEventAudioData(totalSamples, state.renderMode, state.noteBackend, {
+      await buildMixedScoreEventAudioData(totalSamples, {
         targetOutput: cache.scoreSamples,
         rangeStartSample: startSample,
         rangeEndSample: endSample,
@@ -9436,7 +9715,7 @@
         state.renderCache = {
           totalSamples: renderResult.totalSamples,
           renderMode: state.renderMode,
-          noteBackend: state.noteBackend,
+          noteBackend: scoreLayerBackendSignature(),
           drawSamples: renderResult.drawSamples,
           scoreSamples: renderResult.scoreSamples,
           bassSamples: renderResult.bassSamples,
@@ -9544,10 +9823,11 @@
       const totalSamples = totalRenderSamples();
       const startSample = clamp(Math.floor(playbackStartSec * RENDER_SAMPLE_RATE), 0, totalSamples);
       const endSample = clamp(Math.ceil(playbackEndSec * RENDER_SAMPLE_RATE), startSample, totalSamples);
-      const rendered = await withCompositeLayerState(() => renderSmplrScoreEvents(totalSamples, state.noteBackend, {
+      const renderedSamples = await buildMixedScoreEventAudioData(totalSamples, {
+        scoreLayers: state.liveSampleScoreLayers,
         rangeStartSample: startSample,
         rangeEndSample: endSample
-      }));
+      });
       if (
         sessionId !== state.liveSampleSessionId
         || !state.isPlaying
@@ -9557,7 +9837,7 @@
       ) {
         return null;
       }
-      const mixedWindow = rendered.samples.slice();
+      const mixedWindow = renderedSamples.slice(startSample, endSample);
       if (state.previewBaseBuffer) {
         const previewChannel = state.previewBaseBuffer.getChannelData(0);
         const copyLength = Math.min(mixedWindow.length, Math.max(0, previewChannel.length - startSample));
@@ -9771,10 +10051,13 @@
 
   async function playAudioWithProgressiveSampleNotes(audioContext, requestId) {
     const startOffset = preferredPlaybackStartOffset(durationSeconds());
-    const compositeScoreEvents = currentRenderLayerState().scoreEvents;
-    const progressiveScoreEvents = compositeScoreEvents.length
-      ? cloneEventList(compositeScoreEvents)
-      : cloneEventList(state.scoreEvents);
+    const progressiveScoreLayers = scoreLayersForRender().map((layer) => ({
+      id: layer.id,
+      name: layer.name,
+      noteBackend: layer.noteBackend,
+      scoreEvents: cloneEventList(layer.scoreEvents)
+    }));
+    const progressiveScoreEvents = progressiveScoreLayers.flatMap((layer) => cloneEventList(layer.scoreEvents));
     const baseBuffer = await renderPreviewBaseIfNeeded("playback layers");
     if (requestId !== state.transportRequestId || state.transportPending !== "play") {
       return false;
@@ -9796,6 +10079,7 @@
     state.liveSampleGainNode = liveSampleGainNode;
     state.liveSampleStopFns = [];
     state.liveSampleScoreEvents = progressiveScoreEvents;
+    state.liveSampleScoreLayers = progressiveScoreLayers;
     state.liveSampleUsesProgressive = true;
     state.liveSampleScheduledUntilSec = startOffset;
     state.liveSampleRenderedWindows.clear();
@@ -9816,7 +10100,7 @@
     if (progressiveScoreEvents.length) {
       setRenderOverlay(true, {
         title: "Preparing playback",
-        detail: `Buffering ${noteBackendName(state.noteBackend).toLowerCase()} window ${initialWindowIndex + 1}/${liveSampleWindowCount()}`,
+        detail: `Buffering note layers window ${initialWindowIndex + 1}/${liveSampleWindowCount()}`,
         progress: null
       });
       try {
@@ -9864,7 +10148,7 @@
     startLiveSampleSchedulerTimer();
     state.transportPending = "";
     setSampleDebug(`playback started at ${startOffset.toFixed(2)}s for active ${state.scoreEvents.length} / composite ${state.liveSampleScoreEvents.length} notes. buffered window ${initialWindowIndex + 1}/${liveSampleWindowCount()}.`);
-    setStatus(`Playing ${noteBackendName(state.noteBackend).toLowerCase()} with progressive window buffering.`);
+    setStatus("Playing note layers with progressive window buffering.");
     updateOutputs();
     renderCanvas();
     state.rafId = requestAnimationFrame(animatePlayhead);
@@ -9885,13 +10169,7 @@
     if (requestId !== state.transportRequestId || state.transportPending !== "play") {
       return;
     }
-    const progressiveSampleNotesAvailable = Boolean(
-      SMPLR_NOTE_BACKENDS[state.noteBackend]
-      && (
-        (currentRenderLayerState().scoreEvents && currentRenderLayerState().scoreEvents.length)
-        || state.scoreEvents.length
-      )
-    );
+    const progressiveSampleNotesAvailable = sampleNoteBackendSupportsProgressivePlay();
     if (progressiveSampleNotesAvailable) {
       try {
         const started = await playAudioWithProgressiveSampleNotes(audioContext, requestId);
@@ -9903,7 +10181,7 @@
           return;
         }
       } catch (error) {
-        state.noteBackendWarning = `Progressive ${noteBackendName(state.noteBackend).toLowerCase()} playback fell back to offline rendering (${error && error.message ? error.message : String(error)}).`;
+        state.noteBackendWarning = `Progressive note-layer playback fell back to offline rendering (${error && error.message ? error.message : String(error)}).`;
         setStatus(state.noteBackendWarning);
       }
     }
@@ -10077,6 +10355,124 @@
       .sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
   }
 
+  function decodeMidiText(bytes) {
+    const text = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+    return text.replace(/\0+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  function preferredNoteBackendForMidiPart(part, fallbackView = "") {
+    const label = `${part?.name || ""} ${part?.instrumentName || ""}`.toLowerCase();
+    const programs = Array.isArray(part?.programs) ? part.programs : [];
+    if (/\b(piano|grand|keys?|keyboard)\b/.test(label)) {
+      return "piano-samples";
+    }
+    if (/\b(piccolo)\b/.test(label)) {
+      return "piccolo-samples";
+    }
+    if (/\b(flute|flautas?)\b/.test(label)) {
+      return "flute-samples";
+    }
+    if (/\b(oboe|oboes?)\b/.test(label)) {
+      return "oboe-samples";
+    }
+    if (/\b(clarinet|clarinetes?)\b/.test(label)) {
+      return "clarinet-samples";
+    }
+    if (/\b(bassoon|fagot)\b/.test(label)) {
+      return "bassoon-samples";
+    }
+    if (/\b(horn|horns|corno|cornos|trompas?)\b/.test(label)) {
+      return "french-horn-samples";
+    }
+    if (/\b(trumpet|trumpets|trompetas?)\b/.test(label)) {
+      return "trumpet-samples";
+    }
+    if (/\b(trombone|trombones?)\b/.test(label)) {
+      return "trombone-samples";
+    }
+    if (/\b(tuba)\b/.test(label)) {
+      return "tuba-samples";
+    }
+    if (/\b(timpani|timbal|timbales?)\b/.test(label)) {
+      return "timpani-samples";
+    }
+    if (/\b(violin|violins?)\b/.test(label)) {
+      return "violin-fluidr3-samples";
+    }
+    if (/\b(viola|violas?)\b/.test(label)) {
+      return "viola-samples";
+    }
+    if (/\b(strings?|ensemble|pizz)\b/.test(label)) {
+      return "violin-fluidr3-samples";
+    }
+    if (/\b(cello|cellos|chello|contrabass|double bass|basses|cotta?bajos?)\b/.test(label)) {
+      return /\b(contrabass|double bass|cotta?bajos?)\b/.test(label) ? "contrabass-samples" : "cello-samples";
+    }
+    if (/\b(guitar|gtr)\b/.test(label)) {
+      return /\b(nylon)\b/.test(label) ? "nylon-guitar-samples" : "steel-guitar-samples";
+    }
+    if (/\b(organ|church)\b/.test(label)) {
+      return "pipe-organ-samples";
+    }
+    for (const program of programs) {
+      if (program >= 0 && program <= 7) {
+        return "piano-samples";
+      }
+      if (program === 24) {
+        return "nylon-guitar-samples";
+      }
+      if (program >= 25 && program <= 31) {
+        return "steel-guitar-samples";
+      }
+      if (program >= 16 && program <= 23) {
+        return "pipe-organ-samples";
+      }
+      if (program === 72) {
+        return "piccolo-samples";
+      }
+      if (program === 73) {
+        return "flute-samples";
+      }
+      if (program === 68) {
+        return "oboe-samples";
+      }
+      if (program === 71) {
+        return "clarinet-samples";
+      }
+      if (program === 70) {
+        return "bassoon-samples";
+      }
+      if (program === 60) {
+        return "french-horn-samples";
+      }
+      if (program === 56) {
+        return "trumpet-samples";
+      }
+      if (program === 57) {
+        return "trombone-samples";
+      }
+      if (program === 58) {
+        return "tuba-samples";
+      }
+      if (program === 47) {
+        return "timpani-samples";
+      }
+      if ([40, 44, 45, 48, 49, 50, 51].includes(program)) {
+        return "violin-fluidr3-samples";
+      }
+      if (program === 41) {
+        return "viola-samples";
+      }
+      if (program === 42) {
+        return "cello-samples";
+      }
+      if (program === 43) {
+        return "contrabass-samples";
+      }
+    }
+    return fallbackView ? preferredNoteBackendForEditorView(fallbackView) : "procedural";
+  }
+
   function parseMusicXmlScore(text) {
     const parser = new DOMParser();
     const xml = parser.parseFromString(text, "application/xml");
@@ -10233,6 +10629,7 @@
     const trackCount = (bytes[10] << 8) | bytes[11];
     let offset = 8 + headerLength;
     const notes = [];
+    const rawParts = [];
     const tempoEvents = [{ tick: 0, usPerQuarter: 500000 }];
 
     for (let trackIndex = 0; trackIndex < trackCount; trackIndex += 1) {
@@ -10245,6 +10642,11 @@
       let absoluteTick = 0;
       let runningStatus = 0;
       const activeNotes = new Map();
+      const trackNotes = [];
+      const trackPrograms = new Set();
+      const trackChannels = new Set();
+      let trackName = "";
+      let instrumentName = "";
 
       while (cursor < trackEnd) {
         const delta = readVarLen(bytes, cursor);
@@ -10269,6 +10671,10 @@
           if (metaType === 0x51 && lengthInfo.value === 3) {
             const usPerQuarter = (bytes[dataStart] << 16) | (bytes[dataStart + 1] << 8) | bytes[dataStart + 2];
             tempoEvents.push({ tick: absoluteTick, usPerQuarter });
+          } else if (metaType === 0x03) {
+            trackName = decodeMidiText(bytes.slice(dataStart, dataEnd)) || trackName;
+          } else if (metaType === 0x04) {
+            instrumentName = decodeMidiText(bytes.slice(dataStart, dataEnd)) || instrumentName;
           }
           cursor = dataEnd;
           continue;
@@ -10282,9 +10688,14 @@
 
         const eventType = status >> 4;
         const channel = status & 0x0f;
+        trackChannels.add(channel + 1);
         const data1 = bytes[cursor];
         const data2 = eventType === 0xc || eventType === 0xd ? 0 : bytes[cursor + 1];
         cursor += eventType === 0xc || eventType === 0xd ? 1 : 2;
+
+        if (eventType === 0xc) {
+          trackPrograms.add(data1);
+        }
 
         if (eventType === 0x9 && data2 > 0) {
           const key = `${channel}:${data1}`;
@@ -10306,9 +10717,25 @@
               midi: data1,
               velocity: noteOn.velocity
             });
+            trackNotes.push({
+              startTick: noteOn.startTick,
+              endTick: absoluteTick,
+              midi: data1,
+              velocity: noteOn.velocity
+            });
           }
         }
       }
+
+      rawParts.push({
+        id: `midi-track-${trackIndex + 1}`,
+        trackIndex,
+        name: trackName || instrumentName || `Track ${trackIndex + 1}`,
+        instrumentName,
+        programs: Array.from(trackPrograms).sort((a, b) => a - b),
+        channels: Array.from(trackChannels).sort((a, b) => a - b),
+        notes: trackNotes
+      });
 
       offset = trackEnd;
     }
@@ -10345,6 +10772,25 @@
       midi: note.midi,
       velocity: note.velocity
     }));
+    const resolvedParts = rawParts
+      .map((part) => {
+        const resolvedPartNotes = normalizeScoreNoteEvents(part.notes.map((note) => ({
+          startSec: tickToSeconds(note.startTick),
+          durationSec: Math.max(0.02, tickToSeconds(note.endTick) - tickToSeconds(note.startTick)),
+          midi: note.midi,
+          velocity: note.velocity
+        })));
+        return {
+          id: part.id,
+          name: part.name,
+          instrumentName: part.instrumentName,
+          programs: part.programs,
+          channels: part.channels,
+          noteBackend: preferredNoteBackendForMidiPart(part),
+          notes: resolvedPartNotes
+        };
+      })
+      .filter((part) => part.notes.length);
     const totalDurationSec = resolvedNotes.reduce(
       (max, note) => Math.max(max, note.startSec + note.durationSec),
       0
@@ -10354,6 +10800,7 @@
     return {
       format: "MIDI",
       notes: normalizeScoreNoteEvents(resolvedNotes),
+      parts: resolvedParts,
       totalDurationSec,
       tempoBpm: primaryTempoBpm
     };
@@ -10362,6 +10809,22 @@
   function paintImportedScore(notes) {
     drawData.fill(0);
     void notes;
+  }
+
+  function normalizeImportedNotes(notes, scale, firstStartSec) {
+    return normalizeScoreNoteEvents((notes || []).map((note) => ({
+      ...note,
+      startSec: Math.max(0, (note.startSec - firstStartSec) * scale),
+      durationSec: Math.max(0.02, note.durationSec * scale)
+    })));
+  }
+
+  function assignImportedNotesToLayer(layer, notes, noteBackend = layerNoteBackend(layer), renameTo = "") {
+    layer.scoreEvents = notes;
+    layer.noteBackend = normalizedLayerNoteBackend(noteBackend, state.noteBackend);
+    if (renameTo) {
+      layer.name = renameTo;
+    }
   }
 
   function importParsedScore(parsedScore) {
@@ -10399,21 +10862,56 @@
       ));
     }
     const firstStartSec = firstNoteStartSec(parsedScore.notes) || 0;
-    const scaledNotes = parsedScore.notes.map((note) => ({
-      ...note,
-      startSec: Math.max(0, (note.startSec - firstStartSec) * scale),
-      durationSec: Math.max(0.02, note.durationSec * scale)
-    }));
+    const scaledNotes = normalizeImportedNotes(parsedScore.notes, scale, firstStartSec);
+    const importedParts = Array.isArray(parsedScore.parts) && parsedScore.parts.length
+      ? parsedScore.parts.map((part) => ({
+        ...part,
+        noteBackend: normalizedLayerNoteBackend(part.noteBackend, preferredNoteBackendForEditorView(suggestedView)),
+        notes: normalizeImportedNotes(part.notes, scale, firstStartSec)
+      })).filter((part) => part.notes.length)
+      : [];
     durationInput.value = String(targetDuration);
     state.viewOffsetCol = 0;
     updateOutputs();
-    state.scoreEvents = scaledNotes;
-    paintImportedScore(scaledNotes);
+    const activeLayer = currentLayerRecord();
+    if (!activeLayer) {
+      throw new Error("No active layer is available for score import.");
+    }
+    if (importedParts.length > 1) {
+      const [primaryPart, ...extraParts] = importedParts;
+      assignImportedNotesToLayer(activeLayer, primaryPart.notes, primaryPart.noteBackend, primaryPart.name);
+      for (const part of extraParts) {
+        const layer = createEmptyLayer(part.name, part.noteBackend);
+        assignImportedNotesToLayer(layer, part.notes, part.noteBackend, part.name);
+        currentTabRecord()?.layers.push(layer);
+      }
+      state.scoreEvents = activeLayer.scoreEvents;
+      state.noteBackend = activeLayer.noteBackend;
+      if (noteBackendSelect) {
+        noteBackendSelect.value = state.noteBackend;
+      }
+    } else {
+      const importedBackend = importedParts[0]?.noteBackend || preferredNoteBackendForEditorView(suggestedView);
+      assignImportedNotesToLayer(activeLayer, scaledNotes, importedBackend);
+      state.scoreEvents = activeLayer.scoreEvents;
+      state.noteBackend = activeLayer.noteBackend;
+      if (noteBackendSelect) {
+        noteBackendSelect.value = state.noteBackend;
+      }
+    }
+    updateWorkspaceUi();
+    paintImportedScore(state.scoreEvents);
     resetUndoHistory();
     markDirty();
-    stopPlayback(
-      `Imported ${parsedScore.notes.length} notes from ${parsedScore.format} into ${scoreViewLabel(suggestedView)} with ${noteBackendName(state.noteBackend)} at ${Math.round(basslineBpm())} BPM${wasScaled ? ` (time-scaled to ${targetDuration} s)` : ""}.`
-    );
+    if (importedParts.length > 1) {
+      stopPlayback(
+        `Imported ${parsedScore.notes.length} notes from ${parsedScore.format} into ${importedParts.length} layers in ${scoreViewLabel(suggestedView)} at ${Math.round(basslineBpm())} BPM${wasScaled ? ` (time-scaled to ${targetDuration} s)` : ""}.`
+      );
+    } else {
+      stopPlayback(
+        `Imported ${parsedScore.notes.length} notes from ${parsedScore.format} into ${scoreViewLabel(suggestedView)} with ${noteBackendName(state.noteBackend)} at ${Math.round(basslineBpm())} BPM${wasScaled ? ` (time-scaled to ${targetDuration} s)` : ""}.`
+      );
+    }
     renderCanvas();
   }
 
@@ -11707,7 +12205,12 @@
           state.freeMaxFreq = effectiveMaxFrequency();
         }
         state.editorView = editorViewSelect.value;
-        state.noteBackend = preferredNoteBackendForEditorView(state.editorView);
+        const preferredBackend = preferredNoteBackendForEditorView(state.editorView);
+        const activeLayer = currentLayerRecord();
+        if (activeLayer) {
+          activeLayer.noteBackend = normalizedLayerNoteBackend(preferredBackend, preferredBackend);
+        }
+        state.noteBackend = preferredBackend;
         state.renderMode = preferredRenderModeForNoteBackend(state.noteBackend, state.renderMode);
         applyEditorViewSettings();
         updateOutputs();
@@ -11864,8 +12367,14 @@
 
     if (noteBackendSelect) {
       noteBackendSelect.addEventListener("input", () => {
-        state.noteBackend = noteBackendSelect.value || "procedural";
+        const nextBackend = noteBackendSelect.value || "procedural";
+        const activeLayer = currentLayerRecord();
+        if (activeLayer) {
+          activeLayer.noteBackend = normalizedLayerNoteBackend(nextBackend, nextBackend);
+        }
+        state.noteBackend = normalizedLayerNoteBackend(nextBackend, nextBackend);
         state.renderMode = preferredRenderModeForNoteBackend(state.noteBackend, state.renderMode);
+        updateWorkspaceUi();
         updateOutputs();
         markDirty();
         if (state.isPlaying) {
