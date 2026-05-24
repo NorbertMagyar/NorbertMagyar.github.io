@@ -49,6 +49,7 @@
     const SMPLR_RENDER_PREROLL_SECONDS = 1.4;
     const SMPLR_RENDER_TAIL_SECONDS = 1.4;
     const LIVE_SAMPLE_PLAY_WINDOW_SECONDS = 8;
+    const LIVE_SAMPLE_WINDOW_CROSSFADE_SECONDS = 0.12;
     const LIVE_SAMPLE_RENDER_AHEAD_SECONDS = 18;
     const LIVE_SAMPLE_NOTE_LOOKAHEAD_SECONDS = 0.75;
     const SMPLR_MODULE_URL = "https://unpkg.com/smplr/dist/index.mjs";
@@ -9519,26 +9520,30 @@
 
   async function ensureLiveSampleWindow(windowIndex, options = {}) {
     if (!state.liveSampleUsesProgressive || !state.audioContext || !state.liveSampleGainNode) {
-      return;
+      return null;
     }
     if (windowIndex < 0 || windowIndex >= liveSampleWindowCount()) {
-      return;
+      return null;
     }
     const key = String(windowIndex);
     if (state.liveSampleRenderedWindows.has(key) || state.liveSampleRenderingWindows.has(key)) {
-      return;
+      return null;
     }
     state.liveSampleRenderingWindows.add(key);
     const sessionId = state.liveSampleSessionId;
     try {
       if (!liveSampleWindowHasNotes(windowIndex)) {
         state.liveSampleRenderedWindows.add(key);
-        return;
+        return null;
       }
       const { startSec, endSec } = liveSampleWindowBounds(windowIndex);
+      const overlapStartSec = windowIndex > 0 ? LIVE_SAMPLE_WINDOW_CROSSFADE_SECONDS : 0;
+      const overlapEndSec = windowIndex < liveSampleWindowCount() - 1 ? LIVE_SAMPLE_WINDOW_CROSSFADE_SECONDS : 0;
+      const playbackStartSec = Math.max(0, startSec - overlapStartSec);
+      const playbackEndSec = endSec;
       const totalSamples = totalRenderSamples();
-      const startSample = clamp(Math.floor(startSec * RENDER_SAMPLE_RATE), 0, totalSamples);
-      const endSample = clamp(Math.ceil(endSec * RENDER_SAMPLE_RATE), startSample, totalSamples);
+      const startSample = clamp(Math.floor(playbackStartSec * RENDER_SAMPLE_RATE), 0, totalSamples);
+      const endSample = clamp(Math.ceil(playbackEndSec * RENDER_SAMPLE_RATE), startSample, totalSamples);
       const rendered = await withCompositeLayerState(() => renderSmplrScoreEvents(totalSamples, state.noteBackend, {
         rangeStartSample: startSample,
         rangeEndSample: endSample
@@ -9550,7 +9555,7 @@
         || !state.audioContext
         || !state.liveSampleGainNode
       ) {
-        return;
+        return null;
       }
       const mixedWindow = rendered.samples.slice();
       if (state.previewBaseBuffer) {
@@ -9561,21 +9566,40 @@
         }
       }
       const buffer = createBufferFromSamples(state.audioContext, mixedWindow);
-      const absoluteStartSec = startSec;
+      const absoluteStartSec = playbackStartSec;
       const nowAbs = Math.max(0, state.audioContext.currentTime - state.playStartedAt);
       const offsetSec = options.initialPlaybackOffsetSec != null
         ? Math.max(0, options.initialPlaybackOffsetSec - absoluteStartSec)
         : Math.max(0, nowAbs - absoluteStartSec);
       if (buffer.duration - offsetSec <= 0.02) {
         state.liveSampleRenderedWindows.add(key);
-        return;
+        return null;
       }
       const source = state.audioContext.createBufferSource();
+      const gainNode = state.audioContext.createGain();
       source.buffer = buffer;
-      source.connect(state.liveSampleGainNode);
-      const startAt = options.initialSourceStartAt != null
+      source.connect(gainNode);
+      gainNode.connect(state.liveSampleGainNode);
+      const desiredStartAt = options.initialSourceStartAt != null
         ? options.initialSourceStartAt
-        : Math.max(state.playStartedAt + absoluteStartSec, state.audioContext.currentTime + 0.01);
+        : state.playStartedAt + absoluteStartSec;
+      const startAt = Math.max(desiredStartAt, state.audioContext.currentTime + 0.01);
+      const audibleDuration = Math.max(0.02, buffer.duration - offsetSec);
+      const fadeInDuration = Math.min(overlapStartSec, audibleDuration * 0.5);
+      const fadeOutDuration = Math.min(overlapEndSec, audibleDuration * 0.5);
+      gainNode.gain.cancelScheduledValues(startAt);
+      if (fadeInDuration > 0.0005) {
+        gainNode.gain.setValueAtTime(0, startAt);
+        gainNode.gain.linearRampToValueAtTime(1, startAt + fadeInDuration);
+      } else {
+        gainNode.gain.setValueAtTime(1, startAt);
+      }
+      if (fadeOutDuration > 0.0005) {
+        const nominalEndAt = startAt + Math.max(0, endSec - absoluteStartSec - offsetSec);
+        const fadeOutStartAt = Math.max(startAt, nominalEndAt - fadeOutDuration);
+        gainNode.gain.setValueAtTime(1, fadeOutStartAt);
+        gainNode.gain.linearRampToValueAtTime(0, nominalEndAt);
+      }
       source.start(startAt, offsetSec);
       scheduleLiveSampleStop(() => {
         try {
@@ -9588,8 +9612,16 @@
         } catch (error) {
           // Ignore repeated disconnects.
         }
+        try {
+          gainNode.disconnect();
+        } catch (error) {
+          // Ignore repeated disconnects.
+        }
       });
       state.liveSampleRenderedWindows.add(key);
+      return {
+        startAt
+      };
     } finally {
       state.liveSampleRenderingWindows.delete(key);
     }
@@ -9772,8 +9804,6 @@
     state.sampleDebugStartedCount = 0;
     state.isPlaying = true;
     state.isPaused = false;
-    const playbackStartAt = audioContext.currentTime + 0.03;
-    state.playStartedAt = playbackStartAt - startOffset;
     state.playDurationSeconds = durationSeconds();
     state.playheadRatio = state.playDurationSeconds > 0 ? startOffset / state.playDurationSeconds : 0;
     state.lastPlaybackLoopIndex = Math.floor(startOffset / Math.max(0.001, state.playDurationSeconds));
@@ -9782,6 +9812,7 @@
       0,
       Math.max(0, liveSampleWindowCount() - 1)
     );
+    let playbackStartAt = audioContext.currentTime + 0.03;
     if (progressiveScoreEvents.length) {
       setRenderOverlay(true, {
         title: "Preparing playback",
@@ -9789,10 +9820,15 @@
         progress: null
       });
       try {
-        await ensureLiveSampleWindow(initialWindowIndex, {
+        const initialWindowResult = await ensureLiveSampleWindow(initialWindowIndex, {
           initialPlaybackOffsetSec: startOffset,
           initialSourceStartAt: playbackStartAt
         });
+        if (initialWindowResult && Number.isFinite(initialWindowResult.startAt)) {
+          playbackStartAt = initialWindowResult.startAt;
+        } else {
+          playbackStartAt = audioContext.currentTime + 0.03;
+        }
       } finally {
         setRenderOverlay(false);
       }
@@ -9800,7 +9836,10 @@
         stopLiveSamplePlayback();
         return false;
       }
+    } else {
+      playbackStartAt = audioContext.currentTime + 0.03;
     }
+    state.playStartedAt = playbackStartAt - startOffset;
     if (baseBuffer) {
       const baseSource = audioContext.createBufferSource();
       baseSource.buffer = baseBuffer;
@@ -10314,7 +10353,7 @@
 
     return {
       format: "MIDI",
-      notes: mergeAdjacentNoteEvents(resolvedNotes),
+      notes: normalizeScoreNoteEvents(resolvedNotes),
       totalDurationSec,
       tempoBpm: primaryTempoBpm
     };
