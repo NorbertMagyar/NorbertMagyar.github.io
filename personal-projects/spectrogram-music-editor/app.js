@@ -26,6 +26,7 @@
     const GRID_COLS = 2880;
     const COLS_PER_SECOND = 200;
     const VIEW_COLS = 300;
+    const RESET_VIEW_COLS = COLS_PER_SECOND * 10;
     const GRID_ROWS = 96;
     const TAU = Math.PI * 2;
     const RENDER_SAMPLE_RATE = 24000;
@@ -2854,7 +2855,11 @@
 
   function resetViewportToEditorDefault() {
     state.viewOffsetCol = 0;
-    state.viewColSpan = VIEW_COLS;
+    state.viewColSpan = clamp(
+      RESET_VIEW_COLS,
+      Math.min(MIN_VIEW_COLS, trackColCount()),
+      trackColCount()
+    );
     const defaultRange = isScoreSheetMode()
       ? defaultFrequencyRangeForView(state.editorView)
       : { min: DEFAULT_FREE_MIN_FREQ, max: DEFAULT_FREE_MAX_FREQ };
