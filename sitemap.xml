@@ -32,9 +32,15 @@
   </url>
   <url>
     <loc>https://norbertmagyar.github.io/hobbies/</loc>
-    <lastmod>2026-03-11</lastmod>
+    <lastmod>2026-10-07</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://norbertmagyar.github.io/hobbies/sculpting/</loc>
+    <lastmod>2026-10-07</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
   </url>
   <url>
     <loc>https://norbertmagyar.github.io/hobbies/lorem-ipsum/</loc>
